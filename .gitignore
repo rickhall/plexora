@@ -1,0 +1,40 @@
+# Gradle files
+.gradle/
+build/
+
+# IntelliJ IDEA files
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Android Studio files
+captures/
+externalNativeBuild/
+.cxx/
+local.properties
+
+# Log files
+*.log
+
+# Output files
+*.apk
+*.aar
+*.bundle
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# User-specific configuration
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/assetWizardSettings.xml
+.idea/dictionaries
+.idea/libraries/
+.idea/caches/
+
+# Built-in Android ignore patterns (recursive)
+**/build/
+**/externalNativeBuild/
+**/.cxx/
