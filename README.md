@@ -1,6 +1,6 @@
 # Plexora
 
-Plexora is a modern, lightweight Plex client designed specifically for **Android Automotive OS**. Unlike traditional mobile apps, Plexora installs directly onto your vehicle's head unit to provide a native, high-performance music streaming experience.
+Plexora is a vibe-coded, modern, lightweight Plex client designed specifically for **Android Automotive OS**. Unlike traditional mobile apps, Plexora installs directly onto your vehicle's head unit to provide a native, high-performance music streaming experience.
 
 ## Features
 
