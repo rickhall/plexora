@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Solid Stylized P in Plex Gold (Centered for Safe Zone) -->
+    <path
+        android:fillColor="#E5A93B"
+        android:pathData="M22,33h18c9,0 16,5 16,14s-7,14 -16,14h-7v14h-11v-42z" />
+    <!-- Symmetrical Play Button in Plex Gold (Centered for Safe Zone) -->
+    <path
+        android:fillColor="#E5A93B"
+        android:pathData="M58,33l28,21l-28,21z" />
+</vector>

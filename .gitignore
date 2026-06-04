@@ -36,5 +36,6 @@ Thumbs.db
 
 # Built-in Android ignore patterns (recursive)
 **/build/
+**/release/
 **/externalNativeBuild/
 **/.cxx/
