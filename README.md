@@ -13,8 +13,6 @@ Plexora is a vibe-coded, modern, lightweight Plex client designed specifically f
 
 ## Screenshots
 
-*(Capture these from your emulator to showcase the app)*
-
 1. **Server Setup**  
    ![Setup](screenshots/setup.png)  
    *Linking a Plex server using the secure PIN-based authentication flow.*
