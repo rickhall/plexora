@@ -212,6 +212,36 @@ class PlexMediaLibraryService : MediaLibraryService() {
     private inner class LibrarySessionCallback : MediaLibrarySession.Callback {
         
         @OptIn(UnstableApi::class)
+        override fun onAddMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>
+        ): ListenableFuture<MutableList<MediaItem>> {
+            val future = SettableFuture.create<MutableList<MediaItem>>()
+            executor.submit {
+                try {
+                    val resolvedItems = mutableListOf<MediaItem>()
+                    for (item in mediaItems) {
+                        if (item.localConfiguration?.uri != null) {
+                            resolvedItems.add(item)
+                        } else if (item.mediaId.startsWith("track_")) {
+                            val ratingKey = item.mediaId.removePrefix("track_")
+                            plexClient.getTrack(ratingKey)?.let {
+                                resolvedItems.add(createMediaItem(it))
+                            }
+                        } else {
+                            resolvedItems.add(item)
+                        }
+                    }
+                    future.set(resolvedItems)
+                } catch (e: Exception) {
+                    future.setException(e)
+                }
+            }
+            return future
+        }
+
+        @OptIn(UnstableApi::class)
         override fun onConnect(
             session: MediaSession,
             controller: MediaSession.ControllerInfo
