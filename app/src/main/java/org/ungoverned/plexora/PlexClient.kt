@@ -134,6 +134,14 @@ class PlexClient(private val context: Context) {
             .remove("server_url")
             .remove("plex_token")
             .remove("section_id")
+            .remove("machine_id")
+            .apply()
+    }
+
+    fun clearPlaybackState() {
+        context.getSharedPreferences("playback_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .clear()
             .apply()
     }
 
@@ -147,7 +155,11 @@ class PlexClient(private val context: Context) {
 
     fun signOut(): Boolean {
         val token = getPlexToken()
-        if (token.isEmpty()) return true
+        if (token.isEmpty()) {
+            clearConfig()
+            clearPlaybackState()
+            return true
+        }
         val clientId = getClientId()
 
         try {
@@ -195,11 +207,13 @@ class PlexClient(private val context: Context) {
         return try {
             client.newCall(request).execute().use { response ->
                 clearConfig()
+                clearPlaybackState()
                 response.isSuccessful
             }
         } catch (e: Exception) {
             Log.e(tag, "Error during sign out", e)
             clearConfig()
+            clearPlaybackState()
             false
         }
     }
