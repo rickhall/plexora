@@ -27,10 +27,12 @@ android {
         create("automotive") {
             dimension = "platform"
             minSdk = 28
+            versionCode = 1_000_003
         }
         create("mobile") {
             dimension = "platform"
             isDefault = true
+            versionCode = 3
         }
     }
 
