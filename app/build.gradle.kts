@@ -22,6 +22,18 @@ android {
         }
     }
 
+    flavorDimensions += "platform"
+    productFlavors {
+        create("automotive") {
+            dimension = "platform"
+            minSdk = 28
+        }
+        create("mobile") {
+            dimension = "platform"
+            isDefault = true
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
