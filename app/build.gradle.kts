@@ -13,7 +13,7 @@ android {
         applicationId = "org.ungoverned.plexora"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
+        versionCode = 5
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -27,12 +27,12 @@ android {
         create("automotive") {
             dimension = "platform"
             minSdk = 28
-            versionCode = 1_000_004
+            versionCode = 1_000_005
         }
         create("mobile") {
             dimension = "platform"
             isDefault = true
-            versionCode = 4
+            versionCode = 5
         }
     }
 
