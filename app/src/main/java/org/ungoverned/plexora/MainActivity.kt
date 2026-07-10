@@ -647,37 +647,36 @@ fun SetupScreen(viewModel: PlexoraViewModel) {
 
     // PIN Auth State
     var pinResponse by remember { mutableStateOf<PlexPinResponse?>(null) }
-    var isPolling by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
 
-    // Polling logic for PIN
-    LaunchedEffect(pinResponse) {
-        if (pinResponse != null && pinResponse?.authToken == null) {
-            isPolling = true
-            coroutineScope.launch(Dispatchers.IO) {
-                val tempClient = PlexClient(context)
-                var linkedToken: String? = null
-                while (linkedToken == null && isPolling) {
-                    delay(3000) // Poll every 3 seconds
-                    linkedToken = tempClient.checkPin(pinResponse!!.id)
-                }
-                if (linkedToken != null) {
-                    val list = tempClient.getServersFromPlexTv(linkedToken!!)
-                    withContext(Dispatchers.Main) {
-                        token = linkedToken!!
-                        isPolling = false
-                        pinResponse = null
-                        // Automatically search for servers after linking
-                        errorMessage = null
-                        if (list.isNotEmpty()) {
-                            serversList = list
-                        } else {
-                            errorMessage = "No servers found for this account."
-                        }
-                    }
-                }
+    // Polling logic for PIN (5-minute timeout matches Plex PIN expiry)
+    LaunchedEffect(pinResponse?.id) {
+        val pin = pinResponse ?: return@LaunchedEffect
+        if (pin.authToken != null) return@LaunchedEffect
+
+        val tempClient = PlexClient(context)
+        val deadline = System.currentTimeMillis() + PIN_LINK_TIMEOUT_MS
+        var linkedToken: String? = null
+
+        while (linkedToken == null) {
+            if (System.currentTimeMillis() >= deadline) {
+                pinResponse = null
+                errorMessage = "Linking timed out. Please try again."
+                return@LaunchedEffect
             }
+            delay(PIN_POLL_INTERVAL_MS)
+            linkedToken = withContext(Dispatchers.IO) { tempClient.checkPin(pin.id) }
+        }
+
+        val list = withContext(Dispatchers.IO) { tempClient.getServersFromPlexTv(linkedToken) }
+        token = linkedToken
+        pinResponse = null
+        errorMessage = null
+        if (list.isNotEmpty()) {
+            serversList = list
+        } else {
+            errorMessage = "No servers found for this account."
         }
     }
 
@@ -700,10 +699,7 @@ fun SetupScreen(viewModel: PlexoraViewModel) {
             Text("Waiting for link...", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
             
             Spacer(modifier = Modifier.height(24.dp))
-            TextButton(onClick = { 
-                pinResponse = null
-                isPolling = false
-            }) {
+            TextButton(onClick = { pinResponse = null }) {
                 Text("Cancel", color = Color.Red)
             }
         } else if (serversList.isEmpty() && sectionsList.isEmpty()) {
@@ -1540,3 +1536,6 @@ fun formatTime(ms: Long): String {
     val minutes = (ms / (1000 * 60)) % 60
     return String.format("%d:%02d", minutes, seconds)
 }
+
+private const val PIN_POLL_INTERVAL_MS = 3_000L
+private const val PIN_LINK_TIMEOUT_MS = 5 * 60 * 1000L
