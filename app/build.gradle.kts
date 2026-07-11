@@ -5,6 +5,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Bump this once per release; automotive flavor gets the offset automatically.
+val appVersionCode = 6
+val appVersionName = "1.0"
+val automotiveVersionCodeOffset = 1_000_000
+
 android {
     namespace = "org.ungoverned.plexora"
     compileSdk = 35
@@ -13,8 +18,8 @@ android {
         applicationId = "org.ungoverned.plexora"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -27,12 +32,11 @@ android {
         create("automotive") {
             dimension = "platform"
             minSdk = 28
-            versionCode = 1_000_006
+            versionCode = appVersionCode + automotiveVersionCodeOffset
         }
         create("mobile") {
             dimension = "platform"
             isDefault = true
-            versionCode = 5
         }
     }
 
