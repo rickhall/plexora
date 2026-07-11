@@ -45,6 +45,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.pm.PackageInfoCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -1465,6 +1466,13 @@ fun SettingsScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val versionInfo = remember(context) {
+        runCatching {
+            val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+            "${packageInfo.versionName ?: "Unknown"} " +
+                "(${PackageInfoCompat.getLongVersionCode(packageInfo)})"
+        }.getOrDefault("Unknown")
+    }
     Column(
         modifier = modifier
             .padding(16.dp)
@@ -1529,6 +1537,25 @@ fun SettingsScreen(
                 ) {
                     Text("Clear All Caches")
                 }
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    "App Information",
+                    color = Color(0xFFFFE5A93B),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+                Text(
+                    "Version $versionInfo",
+                    color = Color.Gray,
+                    fontSize = 14.sp
+                )
             }
         }
     }
