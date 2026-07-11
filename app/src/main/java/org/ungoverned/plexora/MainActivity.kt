@@ -138,6 +138,26 @@ class PlexoraViewModel : ViewModel() {
         handler.post(progressUpdater)
     }
 
+    fun initForAutomotiveSignIn(context: Context) {
+        plexClient = PlexClient(context)
+        _currentScreen.value = Screen.Setup
+        _uiState.value = PlexUiState.ConfigNeeded
+        connectController(context.applicationContext)
+        handler.post(progressUpdater)
+    }
+
+    fun initForAutomotiveSettings(context: Context) {
+        plexClient = PlexClient(context)
+        _currentScreen.value = Screen.Settings
+        _uiState.value = if (plexClient.isConfigured()) {
+            PlexUiState.ArtistsList(emptyList())
+        } else {
+            PlexUiState.ConfigNeeded
+        }
+        connectController(context.applicationContext)
+        handler.post(progressUpdater)
+    }
+
     private fun connectController(context: Context) {
         val sessionToken = SessionToken(
             context,
@@ -635,8 +655,12 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SetupScreen(viewModel: PlexoraViewModel) {
+fun SetupScreen(
+    viewModel: PlexoraViewModel,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
     var url by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
@@ -681,8 +705,7 @@ fun SetupScreen(viewModel: PlexoraViewModel) {
     }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
+        modifier = modifier
             .padding(24.dp)
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1437,11 +1460,13 @@ fun FullPlayerScreen(
 }
 
 @Composable
-fun SettingsScreen(viewModel: PlexoraViewModel) {
+fun SettingsScreen(
+    viewModel: PlexoraViewModel,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
     Column(
-        modifier = Modifier
-            .fillMaxSize()
+        modifier = modifier
             .padding(16.dp)
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,

@@ -1,7 +1,9 @@
 package org.ungoverned.plexora
 
-import android.annotation.SuppressLint
+import android.app.PendingIntent
+import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -10,6 +12,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaConstants
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
@@ -210,6 +213,56 @@ class PlexMediaLibraryService : MediaLibraryService() {
     }
 
     private inner class LibrarySessionCallback : MediaLibrarySession.Callback {
+
+        @OptIn(UnstableApi::class)
+        private fun authenticationRequiredParams(): LibraryParams {
+            val signInIntent = Intent(this@PlexMediaLibraryService, SignInActivity::class.java)
+            val pendingIntent = PendingIntent.getActivity(
+                this@PlexMediaLibraryService,
+                0,
+                signInIntent,
+                PendingIntent.FLAG_IMMUTABLE
+            )
+            val extras = Bundle().apply {
+                putString(
+                    MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_LABEL_COMPAT,
+                    "Sign in"
+                )
+                putParcelable(
+                    MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_INTENT_COMPAT,
+                    pendingIntent
+                )
+                putParcelable(
+                    MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_USING_CAR_APP_LIBRARY_INTENT_COMPAT,
+                    pendingIntent
+                )
+            }
+            return LibraryParams.Builder().setExtras(extras).build()
+        }
+
+        @OptIn(UnstableApi::class)
+        private fun authenticationRequiredMediaItemResult(
+            params: LibraryParams? = null
+        ): ListenableFuture<LibraryResult<MediaItem>> {
+            return com.google.common.util.concurrent.Futures.immediateFuture(
+                LibraryResult.ofError(
+                    LibraryResult.RESULT_ERROR_SESSION_AUTHENTICATION_EXPIRED,
+                    params ?: authenticationRequiredParams()
+                )
+            )
+        }
+
+        @OptIn(UnstableApi::class)
+        private fun authenticationRequiredChildrenResult(
+            params: LibraryParams? = null
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            return com.google.common.util.concurrent.Futures.immediateFuture(
+                LibraryResult.ofError(
+                    LibraryResult.RESULT_ERROR_SESSION_AUTHENTICATION_EXPIRED,
+                    params ?: authenticationRequiredParams()
+                )
+            )
+        }
         
         @OptIn(UnstableApi::class)
         override fun onAddMediaItems(
@@ -277,6 +330,10 @@ class PlexMediaLibraryService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             params: LibraryParams?
         ): ListenableFuture<LibraryResult<MediaItem>> {
+            if (!plexClient.isConfigured()) {
+                return authenticationRequiredMediaItemResult()
+            }
+
             val rootItem = MediaItem.Builder()
                 .setMediaId("root")
                 .setMediaMetadata(
@@ -303,6 +360,10 @@ class PlexMediaLibraryService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            if (!plexClient.isConfigured()) {
+                return authenticationRequiredChildrenResult()
+            }
+
             val future = SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
             executor.submit {
                 try {
@@ -449,6 +510,10 @@ class PlexMediaLibraryService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             mediaId: String
         ): ListenableFuture<LibraryResult<MediaItem>> {
+            if (!plexClient.isConfigured()) {
+                return authenticationRequiredMediaItemResult()
+            }
+
             val future = SettableFuture.create<LibraryResult<MediaItem>>()
             executor.submit {
                 try {
@@ -594,6 +659,10 @@ class PlexMediaLibraryService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            if (!plexClient.isConfigured()) {
+                return authenticationRequiredChildrenResult()
+            }
+
             val future = SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
             executor.submit {
                 try {

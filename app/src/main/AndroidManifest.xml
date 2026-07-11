@@ -14,17 +14,6 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Plexora">
 
-        <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:theme="@style/Theme.Plexora">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="android.intent.category.APP_MUSIC" />
-            </intent-filter>
-        </activity>
-
         <service
             android:name=".PlexMediaLibraryService"
             android:enabled="true"
