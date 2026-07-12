@@ -1,8 +1,12 @@
 package org.ungoverned.plexora
 
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
@@ -33,9 +37,29 @@ class PlexMediaLibraryService : MediaLibraryService() {
 
     private var currentPlayQueueId: String? = null
 
+    private val libraryStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                PlexIntents.ACTION_LIBRARY_CONFIGURED -> refreshLibraryBrowsers()
+                PlexIntents.ACTION_LIBRARY_CLEARED -> refreshLibraryBrowsers()
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         plexClient = PlexClient(this)
+
+        val libraryFilter = IntentFilter().apply {
+            addAction(PlexIntents.ACTION_LIBRARY_CONFIGURED)
+            addAction(PlexIntents.ACTION_LIBRARY_CLEARED)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(libraryStateReceiver, libraryFilter, RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(libraryStateReceiver, libraryFilter)
+        }
 
         player = ExoPlayer.Builder(this)
             .setAudioAttributes(
@@ -205,6 +229,7 @@ class PlexMediaLibraryService : MediaLibraryService() {
 
     override fun onDestroy() {
         savePlaybackState()
+        unregisterReceiver(libraryStateReceiver)
         mediaLibrarySession.release()
         player.release()
         executor.shutdown()
@@ -212,21 +237,27 @@ class PlexMediaLibraryService : MediaLibraryService() {
         super.onDestroy()
     }
 
+    private fun refreshLibraryBrowsers() {
+        mediaLibrarySession.notifyChildrenChanged("root", 2, null)
+    }
+
     private inner class LibrarySessionCallback : MediaLibrarySession.Callback {
 
         @OptIn(UnstableApi::class)
         private fun authenticationRequiredParams(): LibraryParams {
-            val signInIntent = Intent(this@PlexMediaLibraryService, SignInActivity::class.java)
+            val signInIntent = Intent(this@PlexMediaLibraryService, SignInActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
             val pendingIntent = PendingIntent.getActivity(
                 this@PlexMediaLibraryService,
                 0,
                 signInIntent,
-                PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
             val extras = Bundle().apply {
                 putString(
                     MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_LABEL_COMPAT,
-                    "Sign in"
+                    "Sign in to Plex"
                 )
                 putParcelable(
                     MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_INTENT_COMPAT,
@@ -238,18 +269,6 @@ class PlexMediaLibraryService : MediaLibraryService() {
                 )
             }
             return LibraryParams.Builder().setExtras(extras).build()
-        }
-
-        @OptIn(UnstableApi::class)
-        private fun authenticationRequiredMediaItemResult(
-            params: LibraryParams? = null
-        ): ListenableFuture<LibraryResult<MediaItem>> {
-            return com.google.common.util.concurrent.Futures.immediateFuture(
-                LibraryResult.ofError(
-                    LibraryResult.RESULT_ERROR_SESSION_AUTHENTICATION_EXPIRED,
-                    params ?: authenticationRequiredParams()
-                )
-            )
         }
 
         @OptIn(UnstableApi::class)
@@ -330,10 +349,7 @@ class PlexMediaLibraryService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             params: LibraryParams?
         ): ListenableFuture<LibraryResult<MediaItem>> {
-            if (!plexClient.isConfigured()) {
-                return authenticationRequiredMediaItemResult()
-            }
-
+            // AAOS requires a valid root here. Authentication is handled in onGetChildren.
             val rootItem = MediaItem.Builder()
                 .setMediaId("root")
                 .setMediaMetadata(
@@ -498,7 +514,13 @@ class PlexMediaLibraryService : MediaLibraryService() {
                     val result = LibraryResult.ofItemList(ImmutableList.copyOf(items), params)
                     future.set(result)
                 } catch (e: Exception) {
-                    future.setException(e)
+                    android.util.Log.e("PlexMediaService", "Failed to load children for $parentId", e)
+                    future.set(
+                        LibraryResult.ofError(
+                            LibraryResult.RESULT_ERROR_IO,
+                            params
+                        )
+                    )
                 }
             }
             return future
@@ -511,7 +533,12 @@ class PlexMediaLibraryService : MediaLibraryService() {
             mediaId: String
         ): ListenableFuture<LibraryResult<MediaItem>> {
             if (!plexClient.isConfigured()) {
-                return authenticationRequiredMediaItemResult()
+                return com.google.common.util.concurrent.Futures.immediateFuture(
+                    LibraryResult.ofError(
+                        LibraryResult.RESULT_ERROR_SESSION_AUTHENTICATION_EXPIRED,
+                        authenticationRequiredParams()
+                    )
+                )
             }
 
             val future = SettableFuture.create<LibraryResult<MediaItem>>()
@@ -633,7 +660,13 @@ class PlexMediaLibraryService : MediaLibraryService() {
                         future.set(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
                     }
                 } catch (e: Exception) {
-                    future.setException(e)
+                    android.util.Log.e("PlexMediaService", "Failed to load item $mediaId", e)
+                    future.set(
+                        LibraryResult.ofError(
+                            LibraryResult.RESULT_ERROR_IO,
+                            null
+                        )
+                    )
                 }
             }
             return future
@@ -718,7 +751,13 @@ class PlexMediaLibraryService : MediaLibraryService() {
 
                     future.set(LibraryResult.ofItemList(ImmutableList.copyOf(items), params))
                 } catch (e: Exception) {
-                    future.setException(e)
+                    android.util.Log.e("PlexMediaService", "Search failed for $query", e)
+                    future.set(
+                        LibraryResult.ofError(
+                            LibraryResult.RESULT_ERROR_IO,
+                            params
+                        )
+                    )
                 }
             }
             return future

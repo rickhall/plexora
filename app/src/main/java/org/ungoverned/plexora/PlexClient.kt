@@ -123,6 +123,10 @@ class PlexClient(private val context: Context) {
             editor.putString("machine_id", machineId)
         }
         editor.apply()
+        context.sendBroadcast(
+            android.content.Intent(PlexIntents.ACTION_LIBRARY_CONFIGURED)
+                .setPackage(context.packageName)
+        )
     }
 
     fun isConfigured(): Boolean {
@@ -136,6 +140,10 @@ class PlexClient(private val context: Context) {
             .remove("section_id")
             .remove("machine_id")
             .apply()
+        context.sendBroadcast(
+            android.content.Intent(PlexIntents.ACTION_LIBRARY_CLEARED)
+                .setPackage(context.packageName)
+        )
     }
 
     fun clearPlaybackState() {
