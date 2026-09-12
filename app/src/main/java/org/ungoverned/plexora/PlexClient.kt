@@ -59,11 +59,17 @@ data class PlexTrack(
     val index: Int,
     val durationMs: Long,
     val streamUrl: String,
-    val thumbUrl: String?
+    val thumbUrl: String?,
+    val parentRatingKey: String = ""
 )
 
 data class PlexTrackResponse(
     val tracks: List<PlexTrack>,
+    val totalSize: Int
+)
+
+data class PlexPagedList<T>(
+    val items: List<T>,
     val totalSize: Int
 )
 
@@ -352,7 +358,20 @@ class PlexClient(private val context: Context) {
     }
 
     fun getArtists(): List<PlexArtist> {
-        return getArtistsByUrl(buildUrl("/library/sections/${getLibrarySection()}/all", mapOf("type" to "8")))
+        return getArtistsPaged(0, Int.MAX_VALUE).items
+    }
+
+    fun getArtistsPaged(offset: Int, limit: Int): PlexPagedList<PlexArtist> {
+        return getArtistsPagedByUrl(
+            buildUrl(
+                "/library/sections/${getLibrarySection()}/all",
+                mapOf(
+                    "type" to "8",
+                    "X-Plex-Container-Start" to offset.toString(),
+                    "X-Plex-Container-Size" to limit.toString()
+                )
+            )
+        )
     }
 
     fun getArtist(artistRatingKey: String): PlexArtist? {
@@ -360,11 +379,38 @@ class PlexClient(private val context: Context) {
     }
 
     fun getRecentlyAddedAlbums(): List<PlexAlbum> {
-        return getAlbumsByUrl(buildUrl("/library/sections/${getLibrarySection()}/recentlyAdded", mapOf("type" to "9")))
+        return getRecentlyAddedAlbumsPaged(0, Int.MAX_VALUE).items
+    }
+
+    fun getRecentlyAddedAlbumsPaged(offset: Int, limit: Int): PlexPagedList<PlexAlbum> {
+        return getAlbumsPagedByUrl(
+            buildUrl(
+                "/library/sections/${getLibrarySection()}/recentlyAdded",
+                mapOf(
+                    "type" to "9",
+                    "X-Plex-Container-Start" to offset.toString(),
+                    "X-Plex-Container-Size" to limit.toString()
+                )
+            )
+        )
     }
 
     fun getAllAlbums(): List<PlexAlbum> {
-        return getAlbumsByUrl(buildUrl("/library/sections/${getLibrarySection()}/all", mapOf("type" to "9", "sort" to "titleSort")))
+        return getAllAlbumsPaged(0, Int.MAX_VALUE).items
+    }
+
+    fun getAllAlbumsPaged(offset: Int, limit: Int): PlexPagedList<PlexAlbum> {
+        return getAlbumsPagedByUrl(
+            buildUrl(
+                "/library/sections/${getLibrarySection()}/all",
+                mapOf(
+                    "type" to "9",
+                    "sort" to "titleSort",
+                    "X-Plex-Container-Start" to offset.toString(),
+                    "X-Plex-Container-Size" to limit.toString()
+                )
+            )
+        )
     }
 
     fun getAlbum(albumRatingKey: String): PlexAlbum? {
@@ -411,33 +457,85 @@ class PlexClient(private val context: Context) {
     }
 
     private fun getArtistsByUrl(url: String): List<PlexArtist> {
-        val jsonStr = executeGetRequest(url) ?: return emptyList()
+        return getArtistsPagedByUrl(url).items
+    }
+
+    private fun getArtistsPagedByUrl(url: String): PlexPagedList<PlexArtist> {
+        val jsonStr = executeGetRequest(url) ?: return PlexPagedList(emptyList(), 0)
         val artists = mutableListOf<PlexArtist>()
         try {
-            val array = JSONObject(jsonStr).getJSONObject("MediaContainer").optJSONArray("Metadata") ?: return emptyList()
+            val container = JSONObject(jsonStr).getJSONObject("MediaContainer")
+            val totalSize = container.optInt("totalSize", container.optInt("size", 0))
+            val array = container.optJSONArray("Metadata") ?: return PlexPagedList(emptyList(), totalSize)
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 artists.add(PlexArtist(obj.getString("ratingKey"), obj.getString("title"), getImageUrl(obj.optString("thumb", null))))
             }
+            return PlexPagedList(artists, totalSize)
         } catch (e: Exception) {}
-        return artists
+        return PlexPagedList(emptyList(), 0)
     }
 
     private fun getAlbumsByUrl(url: String): List<PlexAlbum> {
-        val jsonStr = executeGetRequest(url) ?: return emptyList()
+        return getAlbumsPagedByUrl(url).items
+    }
+
+    private fun getAlbumsPagedByUrl(url: String): PlexPagedList<PlexAlbum> {
+        val jsonStr = executeGetRequest(url) ?: return PlexPagedList(emptyList(), 0)
         val albums = mutableListOf<PlexAlbum>()
         try {
-            val array = JSONObject(jsonStr).getJSONObject("MediaContainer").optJSONArray("Metadata") ?: return emptyList()
+            val container = JSONObject(jsonStr).getJSONObject("MediaContainer")
+            val totalSize = container.optInt("totalSize", container.optInt("size", 0))
+            val array = container.optJSONArray("Metadata") ?: return PlexPagedList(emptyList(), totalSize)
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 albums.add(PlexAlbum(obj.getString("ratingKey"), obj.optString("parentRatingKey", ""), obj.getString("title"), obj.optString("parentTitle", "Unknown Artist"), getImageUrl(obj.optString("thumb", null))))
             }
+            return PlexPagedList(albums, totalSize)
         } catch (e: Exception) {}
-        return albums
+        return PlexPagedList(emptyList(), 0)
+    }
+
+    fun getPlaylistsPaged(offset: Int, limit: Int): PlexPagedList<PlexPlaylist> {
+        val jsonStr = executeGetRequest(
+            buildUrl(
+                "/playlists",
+                mapOf(
+                    "X-Plex-Container-Start" to offset.toString(),
+                    "X-Plex-Container-Size" to limit.toString()
+                )
+            )
+        ) ?: return PlexPagedList(emptyList(), 0)
+        val playlists = mutableListOf<PlexPlaylist>()
+        try {
+            val container = JSONObject(jsonStr).getJSONObject("MediaContainer")
+            val totalSize = container.optInt("totalSize", container.optInt("size", 0))
+            val array = container.optJSONArray("Metadata") ?: return PlexPagedList(emptyList(), totalSize)
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                if (obj.optString("playlistType") == "audio") {
+                    playlists.add(PlexPlaylist(obj.getString("ratingKey"), obj.getString("title"), getImageUrl(obj.optString("thumb", null))))
+                }
+            }
+            return PlexPagedList(playlists, totalSize)
+        } catch (e: Exception) {}
+        return PlexPagedList(emptyList(), 0)
     }
 
     fun getAlbums(artistRatingKey: String): List<PlexAlbum> {
-        return getAlbumsByUrl(buildUrl("/library/metadata/$artistRatingKey/children"))
+        return getAlbumsPaged(artistRatingKey, 0, Int.MAX_VALUE).items
+    }
+
+    fun getAlbumsPaged(artistRatingKey: String, offset: Int, limit: Int): PlexPagedList<PlexAlbum> {
+        return getAlbumsPagedByUrl(
+            buildUrl(
+                "/library/metadata/$artistRatingKey/children",
+                mapOf(
+                    "X-Plex-Container-Start" to offset.toString(),
+                    "X-Plex-Container-Size" to limit.toString()
+                )
+            )
+        )
     }
 
     fun getTracks(albumRatingKey: String, offset: Int = 0, limit: Int = 100): PlexTrackResponse {
@@ -484,15 +582,21 @@ class PlexClient(private val context: Context) {
         return emptyList()
     }
 
-    fun createPlayQueue(sourceUri: String, shuffle: Boolean = true): PlexPlayQueue? {
-        Log.d(tag, "Creating play queue for URI: $sourceUri (shuffle=$shuffle)")
-        val url = buildUrl("/playQueues", mapOf(
+    fun createPlayQueue(
+        sourceUri: String,
+        shuffle: Boolean = true,
+        startRatingKey: String? = null
+    ): PlexPlayQueue? {
+        Log.d(tag, "Creating play queue for URI: $sourceUri (shuffle=$shuffle, start=$startRatingKey)")
+        val params = mutableMapOf(
             "type" to "audio",
             "uri" to sourceUri,
             "shuffle" to if (shuffle) "1" else "0",
             "repeat" to "0",
             "includeChapters" to "1"
-        ))
+        )
+        startRatingKey?.let { params["key"] = it }
+        val url = buildUrl("/playQueues", params)
         
         val request = Request.Builder()
             .url(url)
@@ -564,7 +668,22 @@ class PlexClient(private val context: Context) {
             val part = media?.optJSONArray("Part")?.optJSONObject(0)
             val streamUrl = part?.optString("key")?.let { buildUrl(it) } ?: ""
             if (streamUrl.isNotEmpty()) {
-                tracks.add(PlexTrack(obj.getString("ratingKey"), obj.getString("title"), obj.optString("grandparentTitle", obj.optString("parentTitle", "Unknown Artist")), obj.optString("parentTitle", "Unknown Album"), obj.optInt("index", i + 1), obj.optLong("duration", 0L), streamUrl, getImageUrl(obj.optString("thumb", null))))
+                val thumbPath = obj.optString("thumb", null)
+                    ?: obj.optString("parentThumb", null)
+                    ?: obj.optString("grandparentThumb", null)
+                tracks.add(
+                    PlexTrack(
+                        ratingKey = obj.getString("ratingKey"),
+                        title = obj.getString("title"),
+                        artistTitle = obj.optString("grandparentTitle", obj.optString("parentTitle", "Unknown Artist")),
+                        albumTitle = obj.optString("parentTitle", "Unknown Album"),
+                        index = obj.optInt("index", i + 1),
+                        durationMs = obj.optLong("duration", 0L),
+                        streamUrl = streamUrl,
+                        thumbUrl = getImageUrl(thumbPath),
+                        parentRatingKey = obj.optString("parentRatingKey", "")
+                    )
+                )
             }
         }
         return tracks

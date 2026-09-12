@@ -8,11 +8,14 @@ import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.LibraryResult
@@ -36,6 +39,8 @@ class PlexMediaLibraryService : MediaLibraryService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private var currentPlayQueueId: String? = null
+    @Volatile
+    private var lastBrowseParentId: String? = null
 
     private val libraryStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -203,24 +208,163 @@ class PlexMediaLibraryService : MediaLibraryService() {
     }
 
     private fun createMediaItem(track: PlexTrack): MediaItem {
-        return MediaItem.Builder()
-            .setMediaId("track_${track.ratingKey}")
-            .setUri(Uri.parse(track.streamUrl))
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(track.title)
-                    .setArtist(track.artistTitle)
-                    .setAlbumTitle(track.albumTitle)
-                    .setFolderType(MediaMetadata.FOLDER_TYPE_NONE)
-                    .setIsPlayable(true)
-                    .setIsBrowsable(false)
-                    .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
-                    .apply {
-                        track.thumbUrl?.let { setArtworkUri(Uri.parse(it)) }
-                    }
-                    .build()
+        return AutomotiveBrowseItems.trackItem(this, track)
+    }
+
+    private fun resolveShufflePlayQueue(mediaId: String): PlexPlayQueue? {
+        val machineId = plexClient.getMachineId()
+        if (machineId.isEmpty()) return null
+        return when {
+            mediaId == AutomotiveBrowseItems.SHUFFLE_LIBRARY_ID ->
+                plexClient.createLibraryPlayQueue()
+            mediaId == AutomotiveBrowseItems.SHUFFLE_ALL_ALBUMS_ID -> {
+                val sectionId = plexClient.getLibrarySection()
+                plexClient.createPlayQueue(
+                    "library://$machineId/directory//library/sections/$sectionId/all?type=9"
+                )
+            }
+            mediaId == AutomotiveBrowseItems.SHUFFLE_RECENTLY_ADDED_ID -> {
+                val sectionId = plexClient.getLibrarySection()
+                plexClient.createPlayQueue(
+                    "library://$machineId/directory//library/sections/$sectionId/recentlyAdded?type=9"
+                )
+            }
+            mediaId.startsWith(AutomotiveBrowseItems.SHUFFLE_ARTIST_PREFIX) -> {
+                val key = mediaId.removePrefix(AutomotiveBrowseItems.SHUFFLE_ARTIST_PREFIX)
+                plexClient.createPlayQueue("library://$machineId/item//library/metadata/$key")
+            }
+            mediaId.startsWith(AutomotiveBrowseItems.SHUFFLE_ALBUM_PREFIX) -> {
+                val key = mediaId.removePrefix(AutomotiveBrowseItems.SHUFFLE_ALBUM_PREFIX)
+                plexClient.createPlayQueue("library://$machineId/item//library/metadata/$key")
+            }
+            mediaId.startsWith(AutomotiveBrowseItems.SHUFFLE_PLAYLIST_PREFIX) -> {
+                val key = mediaId.removePrefix(AutomotiveBrowseItems.SHUFFLE_PLAYLIST_PREFIX)
+                plexClient.createPlayQueue("library://$machineId/directory//playlists/$key/items")
+            }
+            else -> null
+        }
+    }
+
+    private fun applyPlaybackQueue(playQueueId: String, shuffle: Boolean) {
+        currentPlayQueueId = playQueueId
+        Handler(Looper.getMainLooper()).post {
+            player.shuffleModeEnabled = shuffle
+        }
+    }
+
+    private data class BrowsePage(val offset: Int, val limit: Int)
+
+    private fun browsePage(page: Int, pageSize: Int, pageZeroPrefixCount: Int): BrowsePage {
+        if (page == 0) {
+            return BrowsePage(0, (pageSize - pageZeroPrefixCount).coerceAtLeast(0))
+        }
+        return BrowsePage(pageZeroPrefixCount + (page - 1) * pageSize, pageSize)
+    }
+
+    private fun contextSourceUri(trackKey: String, browseParentId: String?): String? {
+        val machineId = plexClient.getMachineId()
+        if (machineId.isEmpty()) return null
+        when {
+            browseParentId?.startsWith("playlist_") == true -> {
+                val playlistKey = browseParentId.removePrefix("playlist_")
+                return "library://$machineId/directory//playlists/$playlistKey/items"
+            }
+            browseParentId?.startsWith("album_") == true -> {
+                val albumKey = browseParentId.removePrefix("album_")
+                val track = plexClient.getTrack(trackKey)
+                if (track == null || track.parentRatingKey.isEmpty() || track.parentRatingKey == albumKey) {
+                    return "library://$machineId/item//library/metadata/$albumKey"
+                }
+            }
+            else -> {
+                val track = plexClient.getTrack(trackKey) ?: return null
+                if (track.parentRatingKey.isNotEmpty()) {
+                    return "library://$machineId/item//library/metadata/${track.parentRatingKey}"
+                }
+            }
+        }
+        return null
+    }
+
+    private fun resolveTrackQueue(
+        trackKey: String,
+        shuffle: Boolean
+    ): MediaSession.MediaItemsWithStartPosition? {
+        val sourceUri = contextSourceUri(trackKey, lastBrowseParentId) ?: return null
+        val playQueue = plexClient.createPlayQueue(
+            sourceUri,
+            shuffle = shuffle,
+            startRatingKey = trackKey
+        ) ?: return null
+        applyPlaybackQueue(playQueue.id, shuffle)
+        val mediaItems = playQueue.tracks.map { createMediaItem(it) }
+        val startIndex = playQueue.tracks.indexOfFirst { it.ratingKey == trackKey }.let { if (it >= 0) it else 0 }
+        return MediaSession.MediaItemsWithStartPosition(mediaItems, startIndex, 0L)
+    }
+
+    private fun resolveSetMediaItems(
+        mediaItems: List<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long
+    ): MediaSession.MediaItemsWithStartPosition {
+        if (mediaItems.isEmpty()) {
+            return MediaSession.MediaItemsWithStartPosition(
+                emptyList(),
+                C.INDEX_UNSET,
+                C.TIME_UNSET
             )
-            .build()
+        }
+        val first = mediaItems.first()
+        when {
+            first.mediaId.startsWith("shuffle::") -> {
+                val playQueue = resolveShufflePlayQueue(first.mediaId)
+                if (playQueue != null && playQueue.tracks.isNotEmpty()) {
+                    applyPlaybackQueue(playQueue.id, shuffle = true)
+                    return MediaSession.MediaItemsWithStartPosition(
+                        playQueue.tracks.map { createMediaItem(it) },
+                        0,
+                        0L
+                    )
+                }
+            }
+            first.mediaId.startsWith("track_") -> {
+                val trackKey = first.mediaId.removePrefix("track_")
+                resolveTrackQueue(trackKey, shuffle = false)?.let { return it }
+                plexClient.getTrack(trackKey)?.let { track ->
+                    return MediaSession.MediaItemsWithStartPosition(
+                        listOf(createMediaItem(track)),
+                        0,
+                        0L
+                    )
+                }
+            }
+            else -> {
+                val resolved = mutableListOf<MediaItem>()
+                for (item in mediaItems) {
+                    when {
+                        item.localConfiguration?.uri != null -> resolved.add(item)
+                        item.mediaId.startsWith("track_") -> {
+                            plexClient.getTrack(item.mediaId.removePrefix("track_"))?.let {
+                                resolved.add(createMediaItem(it))
+                            }
+                        }
+                        else -> resolved.add(item)
+                    }
+                }
+                if (resolved.isNotEmpty()) {
+                    return MediaSession.MediaItemsWithStartPosition(
+                        resolved,
+                        startIndex,
+                        startPositionMs
+                    )
+                }
+            }
+        }
+        return MediaSession.MediaItemsWithStartPosition(
+            emptyList(),
+            C.INDEX_UNSET,
+            C.TIME_UNSET
+        )
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
@@ -238,7 +382,7 @@ class PlexMediaLibraryService : MediaLibraryService() {
     }
 
     private fun refreshLibraryBrowsers() {
-        mediaLibrarySession.notifyChildrenChanged("root", 2, null)
+        mediaLibrarySession.notifyChildrenChanged(AutomotiveBrowseItems.ROOT_ID, 5, null)
     }
 
     private inner class LibrarySessionCallback : MediaLibrarySession.Callback {
@@ -294,18 +438,44 @@ class PlexMediaLibraryService : MediaLibraryService() {
                 try {
                     val resolvedItems = mutableListOf<MediaItem>()
                     for (item in mediaItems) {
-                        if (item.localConfiguration?.uri != null) {
-                            resolvedItems.add(item)
-                        } else if (item.mediaId.startsWith("track_")) {
-                            val ratingKey = item.mediaId.removePrefix("track_")
-                            plexClient.getTrack(ratingKey)?.let {
-                                resolvedItems.add(createMediaItem(it))
+                        when {
+                            item.localConfiguration?.uri != null -> resolvedItems.add(item)
+                            item.mediaId.startsWith("shuffle::") -> {
+                                val playQueue = resolveShufflePlayQueue(item.mediaId)
+                                if (playQueue != null && playQueue.tracks.isNotEmpty()) {
+                                    applyPlaybackQueue(playQueue.id, shuffle = true)
+                                    resolvedItems.addAll(playQueue.tracks.map { createMediaItem(it) })
+                                }
                             }
-                        } else {
-                            resolvedItems.add(item)
+                            item.mediaId.startsWith("track_") -> {
+                                val ratingKey = item.mediaId.removePrefix("track_")
+                                plexClient.getTrack(ratingKey)?.let {
+                                    resolvedItems.add(createMediaItem(it))
+                                }
+                            }
+                            else -> resolvedItems.add(item)
                         }
                     }
                     future.set(resolvedItems)
+                } catch (e: Exception) {
+                    future.setException(e)
+                }
+            }
+            return future
+        }
+
+        @OptIn(UnstableApi::class)
+        override fun onSetMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+            startIndex: Int,
+            startPositionMs: Long
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val future = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
+            executor.submit {
+                try {
+                    future.set(resolveSetMediaItems(mediaItems, startIndex, startPositionMs))
                 } catch (e: Exception) {
                     future.setException(e)
                 }
@@ -321,9 +491,12 @@ class PlexMediaLibraryService : MediaLibraryService() {
             val connectionResult = super.onConnect(session, controller)
             val availableSessionCommands = connectionResult.availableSessionCommands.buildUpon()
             availableSessionCommands.add(SessionCommand("SET_PLAY_QUEUE_ID", android.os.Bundle.EMPTY))
+            val availablePlayerCommands = connectionResult.availablePlayerCommands.buildUpon()
+                .add(Player.COMMAND_SET_SHUFFLE_MODE)
+                .build()
             return MediaSession.ConnectionResult.accept(
                 availableSessionCommands.build(),
-                connectionResult.availablePlayerCommands
+                availablePlayerCommands
             )
         }
 
@@ -350,20 +523,9 @@ class PlexMediaLibraryService : MediaLibraryService() {
             params: LibraryParams?
         ): ListenableFuture<LibraryResult<MediaItem>> {
             // AAOS requires a valid root here. Authentication is handled in onGetChildren.
-            val rootItem = MediaItem.Builder()
-                .setMediaId("root")
-                .setMediaMetadata(
-                    MediaMetadata.Builder()
-                        .setTitle("Root")
-                        .setFolderType(MediaMetadata.FOLDER_TYPE_MIXED)
-                        .setIsPlayable(false)
-                        .setIsBrowsable(true)
-                        .build()
-                )
-                .build()
-            
+            val libraryParams = params ?: AutomotiveBrowseItems.rootLibraryParams()
             return SettableFuture.create<LibraryResult<MediaItem>>().apply {
-                set(LibraryResult.ofItem(rootItem, params))
+                set(LibraryResult.ofItem(AutomotiveBrowseItems.rootItem(), libraryParams))
             }
         }
 
@@ -383,131 +545,135 @@ class PlexMediaLibraryService : MediaLibraryService() {
             val future = SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
             executor.submit {
                 try {
+                    if (parentId.startsWith("album_") || parentId.startsWith("playlist_")) {
+                        lastBrowseParentId = parentId
+                    } else {
+                        lastBrowseParentId = null
+                    }
+
                     val items = mutableListOf<MediaItem>()
-                    if (parentId == "root") {
-                        items.add(
-                            MediaItem.Builder()
-                                .setMediaId("artists")
-                                .setMediaMetadata(
-                                    MediaMetadata.Builder()
-                                        .setTitle("Artists")
-                                        .setFolderType(MediaMetadata.FOLDER_TYPE_ARTISTS)
-                                        .setIsPlayable(false)
-                                        .setIsBrowsable(true)
-                                        .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS)
-                                        .build()
+                    when (parentId) {
+                        AutomotiveBrowseItems.ROOT_ID -> {
+                            items.add(AutomotiveBrowseItems.shuffleItem("Shuffle Library"))
+                            items.add(
+                                AutomotiveBrowseItems.folderItem(
+                                    AutomotiveBrowseItems.ARTISTS_ID,
+                                    "Artists",
+                                    MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS,
+                                    MediaMetadata.FOLDER_TYPE_ARTISTS
                                 )
-                                .build()
-                        )
-                        items.add(
-                            MediaItem.Builder()
-                                .setMediaId("playlists")
-                                .setMediaMetadata(
-                                    MediaMetadata.Builder()
-                                        .setTitle("Playlists")
-                                        .setFolderType(MediaMetadata.FOLDER_TYPE_PLAYLISTS)
-                                        .setIsPlayable(false)
-                                        .setIsBrowsable(true)
-                                        .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS)
-                                        .build()
+                            )
+                            items.add(
+                                AutomotiveBrowseItems.folderItem(
+                                    AutomotiveBrowseItems.ALBUMS_ID,
+                                    "Albums",
+                                    MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS,
+                                    MediaMetadata.FOLDER_TYPE_ALBUMS
                                 )
-                                .build()
-                        )
-                    } else if (parentId == "artists") {
-                        val plexArtists = plexClient.getArtists()
-                        for (artist in plexArtists) {
+                            )
                             items.add(
-                                MediaItem.Builder()
-                                    .setMediaId("artist_${artist.ratingKey}")
-                                    .setMediaMetadata(
-                                        MediaMetadata.Builder()
-                                            .setTitle(artist.title)
-                                            .setFolderType(MediaMetadata.FOLDER_TYPE_ALBUMS)
-                                            .setIsPlayable(false)
-                                            .setIsBrowsable(true)
-                                            .setMediaType(MediaMetadata.MEDIA_TYPE_ARTIST)
-                                            .apply {
-                                                artist.thumbUrl?.let { setArtworkUri(Uri.parse(it)) }
-                                            }
-                                            .build()
-                                    )
-                                    .build()
+                                AutomotiveBrowseItems.folderItem(
+                                    AutomotiveBrowseItems.RECENT_ID,
+                                    "Recently Added",
+                                    MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS,
+                                    MediaMetadata.FOLDER_TYPE_ALBUMS
+                                )
+                            )
+                            items.add(
+                                AutomotiveBrowseItems.folderItem(
+                                    AutomotiveBrowseItems.PLAYLISTS_ID,
+                                    "Playlists",
+                                    MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
+                                    MediaMetadata.FOLDER_TYPE_PLAYLISTS
+                                )
                             )
                         }
-                    } else if (parentId == "playlists") {
-                        val plexPlaylists = plexClient.getPlaylists()
-                        for (playlist in plexPlaylists) {
-                            items.add(
-                                MediaItem.Builder()
-                                    .setMediaId("playlist_${playlist.ratingKey}")
-                                    .setMediaMetadata(
-                                        MediaMetadata.Builder()
-                                            .setTitle(playlist.title)
-                                            .setFolderType(MediaMetadata.FOLDER_TYPE_TITLES)
-                                            .setIsPlayable(false)
-                                            .setIsBrowsable(true)
-                                            .setMediaType(MediaMetadata.MEDIA_TYPE_PLAYLIST)
-                                            .apply {
-                                                playlist.thumbUrl?.let { setArtworkUri(Uri.parse(it)) }
-                                            }
-                                            .build()
-                                    )
-                                    .build()
-                            )
+                        AutomotiveBrowseItems.ARTISTS_ID -> {
+                            val browse = browsePage(page, pageSize, pageZeroPrefixCount = 0)
+                            plexClient.getArtistsPaged(browse.offset, browse.limit).items.forEach {
+                                items.add(AutomotiveBrowseItems.artistItem(this@PlexMediaLibraryService, it))
+                            }
                         }
-                    } else if (parentId.startsWith("playlist_")) {
-                        val playlistRatingKey = parentId.removePrefix("playlist_")
-                        val response = plexClient.getPlaylistTracks(playlistRatingKey)
-                        for (track in response.tracks) {
-                            items.add(createMediaItem(track))
-                        }
-                    } else if (parentId.startsWith("artist_")) {
-                        val artistRatingKey = parentId.removePrefix("artist_")
-                        val plexAlbums = plexClient.getAlbums(artistRatingKey)
-                        for (album in plexAlbums) {
-                            items.add(
-                                MediaItem.Builder()
-                                    .setMediaId("album_${album.ratingKey}")
-                                    .setMediaMetadata(
-                                        MediaMetadata.Builder()
-                                            .setTitle(album.title)
-                                            .setArtist(album.artistTitle)
-                                            .setFolderType(MediaMetadata.FOLDER_TYPE_TITLES)
-                                            .setIsPlayable(false)
-                                            .setIsBrowsable(true)
-                                            .setMediaType(MediaMetadata.MEDIA_TYPE_ALBUM)
-                                            .apply {
-                                                album.thumbUrl?.let { setArtworkUri(Uri.parse(it)) }
-                                            }
-                                            .build()
+                        AutomotiveBrowseItems.ALBUMS_ID -> {
+                            val prefixCount = 1
+                            if (page == 0) {
+                                items.add(
+                                    AutomotiveBrowseItems.contextualShuffleItem(
+                                        AutomotiveBrowseItems.SHUFFLE_ALL_ALBUMS_ID,
+                                        "Shuffle Albums"
                                     )
-                                    .build()
-                            )
+                                )
+                            }
+                            val browse = browsePage(page, pageSize, pageZeroPrefixCount = prefixCount)
+                            plexClient.getAllAlbumsPaged(browse.offset, browse.limit).items.forEach {
+                                items.add(AutomotiveBrowseItems.albumItem(this@PlexMediaLibraryService, it))
+                            }
                         }
-                    } else if (parentId.startsWith("album_")) {
-                        val albumRatingKey = parentId.removePrefix("album_")
-                        val response = plexClient.getTracks(albumRatingKey)
-                        for (track in response.tracks) {
-                            items.add(
-                                MediaItem.Builder()
-                                    .setMediaId("track_${track.ratingKey}")
-                                    .setUri(Uri.parse(track.streamUrl))
-                                    .setMediaMetadata(
-                                        MediaMetadata.Builder()
-                                            .setTitle(track.title)
-                                            .setArtist(track.artistTitle)
-                                            .setAlbumTitle(track.albumTitle)
-                                            .setFolderType(MediaMetadata.FOLDER_TYPE_NONE)
-                                            .setIsPlayable(true)
-                                            .setIsBrowsable(false)
-                                            .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
-                                            .apply {
-                                                track.thumbUrl?.let { setArtworkUri(Uri.parse(it)) }
-                                            }
-                                            .build()
+                        AutomotiveBrowseItems.RECENT_ID -> {
+                            val prefixCount = 1
+                            if (page == 0) {
+                                items.add(
+                                    AutomotiveBrowseItems.contextualShuffleItem(
+                                        AutomotiveBrowseItems.SHUFFLE_RECENTLY_ADDED_ID,
+                                        "Shuffle Recently Added"
                                     )
-                                    .build()
-                            )
+                                )
+                            }
+                            val browse = browsePage(page, pageSize, pageZeroPrefixCount = prefixCount)
+                            plexClient.getRecentlyAddedAlbumsPaged(browse.offset, browse.limit).items.forEach {
+                                items.add(AutomotiveBrowseItems.albumItem(this@PlexMediaLibraryService, it))
+                            }
+                        }
+                        AutomotiveBrowseItems.PLAYLISTS_ID -> {
+                            val browse = browsePage(page, pageSize, pageZeroPrefixCount = 0)
+                            plexClient.getPlaylistsPaged(browse.offset, browse.limit).items.forEach {
+                                items.add(AutomotiveBrowseItems.playlistItem(this@PlexMediaLibraryService, it))
+                            }
+                        }
+                        else -> when {
+                            parentId.startsWith("playlist_") -> {
+                                val playlistRatingKey = parentId.removePrefix("playlist_")
+                                val prefixCount = 1
+                                if (page == 0) {
+                                    items.add(
+                                        AutomotiveBrowseItems.contextualShuffleItem(
+                                            "${AutomotiveBrowseItems.SHUFFLE_PLAYLIST_PREFIX}$playlistRatingKey"
+                                        )
+                                    )
+                                }
+                                val browse = browsePage(page, pageSize, pageZeroPrefixCount = prefixCount)
+                                plexClient.getPlaylistTracks(playlistRatingKey, browse.offset, browse.limit)
+                                    .tracks.forEach { items.add(createMediaItem(it)) }
+                            }
+                            parentId.startsWith("artist_") -> {
+                                val artistRatingKey = parentId.removePrefix("artist_")
+                                val prefixCount = 1
+                                if (page == 0) {
+                                    items.add(
+                                        AutomotiveBrowseItems.contextualShuffleItem(
+                                            "${AutomotiveBrowseItems.SHUFFLE_ARTIST_PREFIX}$artistRatingKey"
+                                        )
+                                    )
+                                }
+                                val browse = browsePage(page, pageSize, pageZeroPrefixCount = prefixCount)
+                                plexClient.getAlbumsPaged(artistRatingKey, browse.offset, browse.limit).items.forEach {
+                                    items.add(AutomotiveBrowseItems.albumItem(this@PlexMediaLibraryService, it))
+                                }
+                            }
+                            parentId.startsWith("album_") -> {
+                                val albumRatingKey = parentId.removePrefix("album_")
+                                val prefixCount = 1
+                                if (page == 0) {
+                                    items.add(
+                                        AutomotiveBrowseItems.contextualShuffleItem(
+                                            "${AutomotiveBrowseItems.SHUFFLE_ALBUM_PREFIX}$albumRatingKey"
+                                        )
+                                    )
+                                }
+                                val browse = browsePage(page, pageSize, pageZeroPrefixCount = prefixCount)
+                                plexClient.getTracks(albumRatingKey, browse.offset, browse.limit)
+                                    .tracks.forEach { items.add(createMediaItem(it)) }
+                            }
                         }
                     }
                     
@@ -545,107 +711,57 @@ class PlexMediaLibraryService : MediaLibraryService() {
             executor.submit {
                 try {
                     val item = when {
-                        mediaId == "root" -> {
-                            MediaItem.Builder()
-                                .setMediaId("root")
-                                .setMediaMetadata(
-                                    MediaMetadata.Builder()
-                                        .setTitle("Root")
-                                        .setFolderType(MediaMetadata.FOLDER_TYPE_MIXED)
-                                        .setIsPlayable(false)
-                                        .setIsBrowsable(true)
-                                        .build()
-                                )
-                                .build()
-                        }
-                        mediaId == "artists" -> {
-                            MediaItem.Builder()
-                                .setMediaId("artists")
-                                .setMediaMetadata(
-                                    MediaMetadata.Builder()
-                                        .setTitle("Artists")
-                                        .setFolderType(MediaMetadata.FOLDER_TYPE_ARTISTS)
-                                        .setIsPlayable(false)
-                                        .setIsBrowsable(true)
-                                        .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS)
-                                        .build()
-                                )
-                                .build()
-                        }
-                        mediaId == "playlists" -> {
-                            MediaItem.Builder()
-                                .setMediaId("playlists")
-                                .setMediaMetadata(
-                                    MediaMetadata.Builder()
-                                        .setTitle("Playlists")
-                                        .setFolderType(MediaMetadata.FOLDER_TYPE_MIXED)
-                                        .setIsPlayable(false)
-                                        .setIsBrowsable(true)
-                                        .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS)
-                                        .build()
-                                )
-                                .build()
-                        }
+                        mediaId == AutomotiveBrowseItems.ROOT_ID ->
+                            AutomotiveBrowseItems.rootItem()
+                        mediaId == AutomotiveBrowseItems.ARTISTS_ID ->
+                            AutomotiveBrowseItems.folderItem(
+                                AutomotiveBrowseItems.ARTISTS_ID,
+                                "Artists",
+                                MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS,
+                                MediaMetadata.FOLDER_TYPE_ARTISTS
+                            )
+                        mediaId == AutomotiveBrowseItems.ALBUMS_ID ->
+                            AutomotiveBrowseItems.folderItem(
+                                AutomotiveBrowseItems.ALBUMS_ID,
+                                "Albums",
+                                MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS,
+                                MediaMetadata.FOLDER_TYPE_ALBUMS
+                            )
+                        mediaId == AutomotiveBrowseItems.RECENT_ID ->
+                            AutomotiveBrowseItems.folderItem(
+                                AutomotiveBrowseItems.RECENT_ID,
+                                "Recently Added",
+                                MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS,
+                                MediaMetadata.FOLDER_TYPE_ALBUMS
+                            )
+                        mediaId == AutomotiveBrowseItems.PLAYLISTS_ID ->
+                            AutomotiveBrowseItems.folderItem(
+                                AutomotiveBrowseItems.PLAYLISTS_ID,
+                                "Playlists",
+                                MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
+                                MediaMetadata.FOLDER_TYPE_PLAYLISTS
+                            )
+                        mediaId == AutomotiveBrowseItems.SHUFFLE_LIBRARY_ID ->
+                            AutomotiveBrowseItems.shuffleItem("Shuffle Library")
+                        mediaId == AutomotiveBrowseItems.SHUFFLE_ALL_ALBUMS_ID ->
+                            AutomotiveBrowseItems.contextualShuffleItem(mediaId, "Shuffle Albums")
+                        mediaId == AutomotiveBrowseItems.SHUFFLE_RECENTLY_ADDED_ID ->
+                            AutomotiveBrowseItems.contextualShuffleItem(mediaId, "Shuffle Recently Added")
+                        mediaId.startsWith(AutomotiveBrowseItems.SHUFFLE_ARTIST_PREFIX) ||
+                            mediaId.startsWith(AutomotiveBrowseItems.SHUFFLE_ALBUM_PREFIX) ||
+                            mediaId.startsWith(AutomotiveBrowseItems.SHUFFLE_PLAYLIST_PREFIX) ->
+                            AutomotiveBrowseItems.contextualShuffleItem(mediaId)
                         mediaId.startsWith("artist_") -> {
                             val ratingKey = mediaId.removePrefix("artist_")
-                            plexClient.getArtist(ratingKey)?.let { artist ->
-                                MediaItem.Builder()
-                                    .setMediaId("artist_${artist.ratingKey}")
-                                    .setMediaMetadata(
-                                        MediaMetadata.Builder()
-                                            .setTitle(artist.title)
-                                            .setFolderType(MediaMetadata.FOLDER_TYPE_ALBUMS)
-                                            .setIsPlayable(false)
-                                            .setIsBrowsable(true)
-                                            .setMediaType(MediaMetadata.MEDIA_TYPE_ARTIST)
-                                            .apply {
-                                                artist.thumbUrl?.let { setArtworkUri(Uri.parse(it)) }
-                                            }
-                                            .build()
-                                    )
-                                    .build()
-                            }
+                            plexClient.getArtist(ratingKey)?.let { AutomotiveBrowseItems.artistItem(this@PlexMediaLibraryService, it) }
                         }
                         mediaId.startsWith("album_") -> {
                             val ratingKey = mediaId.removePrefix("album_")
-                            plexClient.getAlbum(ratingKey)?.let { album ->
-                                MediaItem.Builder()
-                                    .setMediaId("album_${album.ratingKey}")
-                                    .setMediaMetadata(
-                                        MediaMetadata.Builder()
-                                            .setTitle(album.title)
-                                            .setArtist(album.artistTitle)
-                                            .setFolderType(MediaMetadata.FOLDER_TYPE_TITLES)
-                                            .setIsPlayable(false)
-                                            .setIsBrowsable(true)
-                                            .setMediaType(MediaMetadata.MEDIA_TYPE_ALBUM)
-                                            .apply {
-                                                album.thumbUrl?.let { setArtworkUri(Uri.parse(it)) }
-                                            }
-                                            .build()
-                                    )
-                                    .build()
-                            }
+                            plexClient.getAlbum(ratingKey)?.let { AutomotiveBrowseItems.albumItem(this@PlexMediaLibraryService, it) }
                         }
                         mediaId.startsWith("playlist_") -> {
                             val ratingKey = mediaId.removePrefix("playlist_")
-                            plexClient.getPlaylist(ratingKey)?.let { playlist ->
-                                MediaItem.Builder()
-                                    .setMediaId("playlist_${playlist.ratingKey}")
-                                    .setMediaMetadata(
-                                        MediaMetadata.Builder()
-                                            .setTitle(playlist.title)
-                                            .setFolderType(MediaMetadata.FOLDER_TYPE_TITLES)
-                                            .setIsPlayable(false)
-                                            .setIsBrowsable(true)
-                                            .setMediaType(MediaMetadata.MEDIA_TYPE_PLAYLIST)
-                                            .apply {
-                                                playlist.thumbUrl?.let { setArtworkUri(Uri.parse(it)) }
-                                            }
-                                            .build()
-                                    )
-                                    .build()
-                            }
+                            plexClient.getPlaylist(ratingKey)?.let { AutomotiveBrowseItems.playlistItem(this@PlexMediaLibraryService, it) }
                         }
                         mediaId.startsWith("track_") -> {
                             val ratingKey = mediaId.removePrefix("track_")
@@ -699,49 +815,15 @@ class PlexMediaLibraryService : MediaLibraryService() {
             val future = SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
             executor.submit {
                 try {
+                    lastBrowseParentId = null
                     val items = mutableListOf<MediaItem>()
 
-                    // Search Artists
                     plexClient.searchArtists(query).forEach { artist ->
-                        items.add(
-                            MediaItem.Builder()
-                                .setMediaId("artist_${artist.ratingKey}")
-                                .setMediaMetadata(
-                                    MediaMetadata.Builder()
-                                        .setTitle(artist.title)
-                                        .setFolderType(MediaMetadata.FOLDER_TYPE_ALBUMS)
-                                        .setIsPlayable(false)
-                                        .setIsBrowsable(true)
-                                        .setMediaType(MediaMetadata.MEDIA_TYPE_ARTIST)
-                                        .apply {
-                                            artist.thumbUrl?.let { setArtworkUri(Uri.parse(it)) }
-                                        }
-                                        .build()
-                                )
-                                .build()
-                        )
+                        items.add(AutomotiveBrowseItems.artistItem(this@PlexMediaLibraryService, artist))
                     }
 
-                    // Search Albums
                     plexClient.searchAlbums(query).forEach { album ->
-                        items.add(
-                            MediaItem.Builder()
-                                .setMediaId("album_${album.ratingKey}")
-                                .setMediaMetadata(
-                                    MediaMetadata.Builder()
-                                        .setTitle(album.title)
-                                        .setArtist(album.artistTitle)
-                                        .setFolderType(MediaMetadata.FOLDER_TYPE_TITLES)
-                                        .setIsPlayable(false)
-                                        .setIsBrowsable(true)
-                                        .setMediaType(MediaMetadata.MEDIA_TYPE_ALBUM)
-                                        .apply {
-                                            album.thumbUrl?.let { setArtworkUri(Uri.parse(it)) }
-                                        }
-                                        .build()
-                                )
-                                .build()
-                        )
+                        items.add(AutomotiveBrowseItems.albumItem(this@PlexMediaLibraryService, album))
                     }
 
                     // Search Tracks
