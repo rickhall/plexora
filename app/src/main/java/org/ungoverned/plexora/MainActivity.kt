@@ -8,11 +8,13 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
-import androidx.compose.animation.*
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -34,9 +36,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -475,6 +480,10 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
 
     var showFullPlayer by remember { mutableStateOf(false) }
 
+    BackHandler(enabled = showFullPlayer) {
+        showFullPlayer = false
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.fillMaxSize()) {
             // Left Navigation Rail
@@ -641,14 +650,12 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
             }
         }
 
-        // Full Screen Player Overlay
-        AnimatedVisibility(
-            visible = showFullPlayer,
-            enter = slideInVertically(initialOffsetY = { it }),
-            exit = slideOutVertically(targetOffsetY = { it })
-        ) {
+        if (showFullPlayer && currentTrack != null) {
             FullPlayerScreen(
-                mediaItem = currentTrack ?: return@AnimatedVisibility,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(10f),
+                mediaItem = currentTrack!!,
                 isPlaying = isPlaying,
                 shuffleModeEnabled = shuffleModeEnabled,
                 progress = progress,
@@ -1478,19 +1485,25 @@ fun FullPlayerScreen(
     onPrevious: () -> Unit,
     onToggleShuffle: () -> Unit,
     onSeek: (Long) -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val configuration = LocalConfiguration.current
     val isPortraitLayout = configuration.screenHeightDp > configuration.screenWidthDp
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .background(Color(0xFF121214))
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+                onClick = {}
+            )
     ) {
         AsyncImage(
             model = mediaItem.mediaMetadata.artworkUri?.toString(),
-            contentDescription = "Background",
+            contentDescription = null,
             modifier = Modifier
                 .fillMaxSize()
                 .blur(40.dp)
@@ -1501,28 +1514,10 @@ fun FullPlayerScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 20.dp, vertical = 12.dp),
+                .padding(horizontal = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 56.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier.size(56.dp)
-                ) {
-                    Icon(
-                        Icons.Default.KeyboardArrowDown,
-                        contentDescription = "Close player",
-                        tint = Color.White,
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
-            }
+            FullPlayerDismissHandle(onClose = onClose)
 
             if (isPortraitLayout) {
                 Column(
@@ -1558,15 +1553,18 @@ fun FullPlayerScreen(
                 Row(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxWidth(),
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                        .fullPlayerSwipeDownToDismiss(onClose),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(32.dp)
+                    horizontalArrangement = Arrangement.spacedBy(24.dp)
                 ) {
                     FullPlayerArtwork(
                         mediaItem = mediaItem,
                         modifier = Modifier
                             .weight(1f)
-                            .aspectRatio(1f)
+                            .fillMaxHeight()
+                            .aspectRatio(1f, matchHeightConstraintsFirst = true)
                     )
                     FullPlayerDetailsAndControls(
                         mediaItem = mediaItem,
@@ -1579,11 +1577,57 @@ fun FullPlayerScreen(
                         onPrevious = onPrevious,
                         onToggleShuffle = onToggleShuffle,
                         onSeek = onSeek,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
                     )
                 }
             }
         }
+    }
+}
+
+private fun Modifier.fullPlayerSwipeDownToDismiss(onClose: () -> Unit): Modifier = composed {
+    var downwardDrag by remember { mutableFloatStateOf(0f) }
+    pointerInput(onClose) {
+        detectVerticalDragGestures(
+            onDragEnd = {
+                if (downwardDrag > 96f) {
+                    onClose()
+                }
+                downwardDrag = 0f
+            },
+            onVerticalDrag = { _, dragAmount ->
+                if (dragAmount > 0f) {
+                    downwardDrag += dragAmount
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun FullPlayerDismissHandle(onClose: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .fullPlayerSwipeDownToDismiss(onClose)
+            .clickable(
+                onClick = onClose,
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() }
+            )
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .width(40.dp)
+                .height(4.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(Color.White.copy(alpha = 0.4f))
+        )
     }
 }
 
