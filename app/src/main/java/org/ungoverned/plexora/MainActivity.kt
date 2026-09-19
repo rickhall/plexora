@@ -40,8 +40,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -86,7 +88,7 @@ sealed class Screen {
 // ViewModel to manage connection and MediaController binding
 class PlexoraViewModel : ViewModel() {
     private val tag = "PlexoraVM"
-    
+
     private val _uiState = MutableStateFlow<PlexUiState>(PlexUiState.Loading)
     val uiState: StateFlow<PlexUiState> = _uiState.asStateFlow()
 
@@ -287,10 +289,10 @@ class PlexoraViewModel : ViewModel() {
                 }
                 _currentTrack.value = null
             }
-            
+
             // 2. Revoke token on server and clear local prefs
             plexClient.signOut()
-            
+
             // 3. Reset UI state
             withContext(Dispatchers.Main) {
                 _currentScreen.value = Screen.Setup
@@ -316,7 +318,7 @@ class PlexoraViewModel : ViewModel() {
     fun shufflePlaylist(playlist: PlexPlaylist) {
         val machineId = plexClient.getMachineId()
         if (machineId.isEmpty()) return
-        
+
         /**
          * PLEX API NOTE: For playlists, we MUST use the 'directory' URI prefix rather than 'item'.
          * 'item' works for Artists/Albums (Metadata tree), but Playlists are containers that
@@ -360,7 +362,7 @@ class PlexoraViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             // 1. Clear Metadata Cache
             plexClient.clearCaches()
-            
+
             // 2. Clear Coil Caches (Image Cache)
             val imageLoader = coil.Coil.imageLoader(context)
             imageLoader.diskCache?.clear()
@@ -371,7 +373,7 @@ class PlexoraViewModel : ViewModel() {
     @androidx.annotation.OptIn(UnstableApi::class)
     fun playTracks(tracks: List<PlexTrack>, startIndex: Int, shuffle: Boolean = false, playQueueId: String? = null) {
         val controller = _mediaController.value ?: return
-        
+
         controller.shuffleModeEnabled = shuffle
         // If we have a server-side queue ID, pass it to the service for persistence
         if (playQueueId != null) {
@@ -518,19 +520,20 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
             }
 
             Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                // Main Top Bar
+                // Main Top Bar (hidden during Plex linking so setup uses the full content area)
+                if (currentScreen != Screen.Setup) {
                 TopAppBar(
-                    title = { 
+                    title = {
                         Text(
                             "PLEXORA",
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFFFFE5A93B),
                             letterSpacing = 2.sp
-                        ) 
+                        )
                     },
                     actions = {
-                        if (currentScreen != Screen.Setup && currentScreen != Screen.Settings) {
-                            IconButton(onClick = { 
+                        if (currentScreen != Screen.Settings) {
+                            IconButton(onClick = {
                                 when (val screen = currentScreen) {
                                     is Screen.ArtistAlbums -> viewModel.shuffleAndPlayArtist(screen.artist)
                                     is Screen.AlbumTracks -> viewModel.shuffleAlbum(screen.album)
@@ -550,15 +553,20 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                         containerColor = Color(0xFF121214)
                     )
                 )
+                }
 
                 // Screen Selector
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
+                        .fillMaxHeight()
                 ) {
                     when (currentScreen) {
-                        is Screen.Setup -> SetupScreen(viewModel)
+                        is Screen.Setup -> SetupScreen(
+                            viewModel,
+                            modifier = Modifier.fillMaxSize()
+                        )
                         is Screen.Artists -> {
                             when (val state = uiState) {
                                 is PlexUiState.Loading -> CircularLoading()
@@ -616,15 +624,15 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                 }
 
                 // Bottom Mini Player
-                if (currentTrack != null) {
+                if (currentScreen != Screen.Setup && currentTrack != null) {
                     MiniPlayer(
                         mediaItem = currentTrack!!,
                         isPlaying = isPlaying,
                         onPlayPause = {
                             if (isPlaying) controller?.pause() else controller?.play()
                         },
-                        onClear = { 
-                            if (!isPlaying) viewModel.stopPlayback() 
+                        onClear = {
+                            if (!isPlaying) viewModel.stopPlayback()
                             else controller?.pause()
                         },
                         onClick = { showFullPlayer = true }
@@ -656,6 +664,37 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
     }
 }
 
+@Composable
+fun SetupProgressStep(
+    title: String,
+    subtitle: String,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(48.dp),
+            color = Color(0xFFFFE5A93B)
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+        Text(
+            title,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            subtitle,
+            color = Color.Gray,
+            fontSize = 14.sp,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SetupScreen(
@@ -672,6 +711,9 @@ fun SetupScreen(
 
     // PIN Auth State
     var pinResponse by remember { mutableStateOf<PlexPinResponse?>(null) }
+    var isFetchingServers by remember { mutableStateOf(false) }
+    var isConnectingToServer by remember { mutableStateOf(false) }
+    var connectingServerName by remember { mutableStateOf<String?>(null) }
 
     val coroutineScope = rememberCoroutineScope()
 
@@ -694,26 +736,57 @@ fun SetupScreen(
             linkedToken = withContext(Dispatchers.IO) { tempClient.checkPin(pin.id) }
         }
 
-        val list = withContext(Dispatchers.IO) { tempClient.getServersFromPlexTv(linkedToken) }
-        token = linkedToken
-        pinResponse = null
-        errorMessage = null
-        if (list.isNotEmpty()) {
-            serversList = list
-        } else {
-            errorMessage = "No servers found for this account."
+        // Fetch on scope that survives clearing pinResponse (LaunchedEffect key would cancel otherwise).
+        val authToken = linkedToken
+        coroutineScope.launch {
+            pinResponse = null
+            isFetchingServers = true
+            errorMessage = null
+            try {
+                val list = withContext(Dispatchers.IO) { tempClient.getServersFromPlexTv(authToken) }
+                token = authToken
+                if (list.isNotEmpty()) {
+                    serversList = list
+                } else {
+                    errorMessage = "No servers found for this account."
+                }
+            } catch (e: Exception) {
+                errorMessage = "Could not reach Plex. Check your connection and try again."
+            } finally {
+                isFetchingServers = false
+            }
         }
     }
 
-    Column(
+    val isCompactSetupStep = pinResponse != null ||
+        isFetchingServers ||
+        isConnectingToServer ||
+        (serversList.isEmpty() && sectionsList.isEmpty())
+
+    Box(
         modifier = modifier
+            .fillMaxSize()
             .padding(24.dp)
-            .verticalScroll(rememberScrollState()),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
     ) {
-        Text("Connect your Plex Server", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        Spacer(modifier = Modifier.height(24.dp))
+        val setupPanelModifier = Modifier
+            .align(Alignment.Center)
+            .fillMaxHeight()
+            .widthIn(max = 480.dp)
+            .fillMaxWidth()
+
+        if (isCompactSetupStep) {
+            Column(
+                modifier = setupPanelModifier.verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    "Connect your Plex Server",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                Spacer(modifier = Modifier.height(24.dp))
 
         if (pinResponse != null) {
             Text("Go to plex.tv/link and enter code:", color = Color.Gray, fontSize = 16.sp)
@@ -721,11 +794,22 @@ fun SetupScreen(
             Spacer(modifier = Modifier.height(16.dp))
             CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color(0xFFFFE5A93B))
             Text("Waiting for link...", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
-            
+
             Spacer(modifier = Modifier.height(24.dp))
             TextButton(onClick = { pinResponse = null }) {
                 Text("Cancel", color = Color.Red)
             }
+        } else if (isFetchingServers) {
+            SetupProgressStep(
+                title = "Contacting Plex",
+                subtitle = "Finding Plex servers on your account..."
+            )
+        } else if (isConnectingToServer) {
+            SetupProgressStep(
+                title = "Connecting to server",
+                subtitle = connectingServerName?.let { "Checking $it for music libraries..." }
+                    ?: "Checking your Plex server..."
+            )
         } else if (serversList.isEmpty() && sectionsList.isEmpty()) {
             Button(
                 onClick = {
@@ -748,37 +832,74 @@ fun SetupScreen(
             ) {
                 Text("Link with Plex.tv")
             }
+        }
+
+                errorMessage?.let {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(it, color = Color.Red, fontSize = 14.sp, textAlign = TextAlign.Center)
+                }
+            }
         } else if (serversList.isNotEmpty() && sectionsList.isEmpty()) {
-            Text("Select a Server:", color = Color.White, fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(8.dp))
-            LazyColumn(modifier = Modifier.weight(1f, fill = false)) {
+            Column(
+                modifier = setupPanelModifier,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "Connect your Plex Server",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    "Select a Server:",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) {
                 items(serversList.size) { index ->
                     val server = serversList[index]
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
+                                if (isConnectingToServer) return@clickable
+                                errorMessage = null
+                                connectingServerName = server.name
+                                isConnectingToServer = true
                                 coroutineScope.launch(Dispatchers.IO) {
                                     val tempClient = PlexClient(context)
                                     val bestUri = tempClient.findBestConnection(server)
+                                    if (bestUri == null) {
+                                        withContext(Dispatchers.Main) {
+                                            isConnectingToServer = false
+                                            connectingServerName = null
+                                            errorMessage =
+                                                "Could not connect to ${server.name}. Check if it is online."
+                                        }
+                                        return@launch
+                                    }
+                                    tempClient.saveConfig(bestUri, token, "", machineId = server.id)
+                                    val list = tempClient.getMusicSections()
                                     withContext(Dispatchers.Main) {
-                                        if (bestUri != null) {
-                                            url = bestUri
-                                            coroutineScope.launch(Dispatchers.IO) {
-                                                tempClient.saveConfig(url, token, "", machineId = server.id)
-                                                val list = tempClient.getMusicSections()
-                                                withContext(Dispatchers.Main) {
-                                                    if (list.isNotEmpty()) {
-                                                        sectionsList = list
-                                                        sectionId = list.first().id
-                                                    } else {
-                                                        errorMessage = "Could not find Music libraries on ${server.name}."
-                                                        tempClient.clearConfig()
-                                                    }
-                                                }
-                                            }
+                                        isConnectingToServer = false
+                                        connectingServerName = null
+                                        url = bestUri
+                                        if (list.isNotEmpty()) {
+                                            sectionsList = list
+                                            sectionId = list.first().id
                                         } else {
-                                            errorMessage = "Could not connect to ${server.name}. Check if it is online."
+                                            errorMessage =
+                                                "Could not find Music libraries on ${server.name}."
+                                            tempClient.clearConfig()
                                         }
                                     }
                                 }
@@ -799,49 +920,91 @@ fun SetupScreen(
                     }
                 }
             }
-            Spacer(modifier = Modifier.height(16.dp))
-            TextButton(onClick = { serversList = emptyList() }) {
-                Text("Back", color = Color(0xFFFFE5A93B))
-            }
-        } else {
-            Text("Select Music Section:", color = Color.White, fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(8.dp))
-            sectionsList.forEach { section ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { sectionId = section.id }
-                        .padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
-                        selected = (sectionId == section.id),
-                        onClick = { sectionId = section.id }
-                    )
-                    Text(section.title, color = Color.White, modifier = Modifier.padding(start = 8.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+                TextButton(onClick = { serversList = emptyList() }) {
+                    Text("Back", color = Color(0xFFFFE5A93B))
+                }
+                errorMessage?.let {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(it, color = Color.Red, fontSize = 14.sp)
                 }
             }
-            Spacer(modifier = Modifier.height(24.dp))
-            Button(
-                onClick = {
-                    viewModel.saveConfig(context, url, token, sectionId)
-                },
-                modifier = Modifier.fillMaxWidth()
+        } else {
+            Column(
+                modifier = setupPanelModifier,
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text("Connect and Import")
-            }
-            TextButton(onClick = { 
-                sectionsList = emptyList()
-                errorMessage = null
-            }) {
-                Text("Back", color = Color(0xFFFFE5A93B))
+                Text(
+                    "Connect your Plex Server",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    "Select Music Section:",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    sectionsList.forEach { section ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { sectionId = section.id }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = (sectionId == section.id),
+                                onClick = { sectionId = section.id }
+                            )
+                            Text(section.title, color = Color.White, modifier = Modifier.padding(start = 8.dp))
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(
+                    onClick = {
+                        viewModel.saveConfig(context, url, token, sectionId)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Connect and Import")
+                }
+                TextButton(onClick = {
+                    sectionsList = emptyList()
+                    errorMessage = null
+                }) {
+                    Text("Back", color = Color(0xFFFFE5A93B))
+                }
+                errorMessage?.let {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(it, color = Color.Red, fontSize = 14.sp)
+                }
             }
         }
+    }
+}
 
-        errorMessage?.let {
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(it, color = Color.Red, fontSize = 14.sp)
-        }
+@Composable
+fun browseLibraryGridColumns(): GridCells {
+    val widthDp = LocalConfiguration.current.screenWidthDp
+    return if (widthDp < 600) {
+        // Phones (portrait or landscape): nav rail + padding often leaves <320dp for one 160dp tile.
+        GridCells.Fixed(2)
+    } else {
+        // Tablets and wide layouts: fit as many columns as space allows.
+        GridCells.Adaptive(minSize = 160.dp)
     }
 }
 
@@ -855,7 +1018,7 @@ fun ArtistsGrid(artists: List<PlexArtist>, state: LazyGridState = rememberLazyGr
     }
 
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 160.dp),
+        columns = browseLibraryGridColumns(),
         contentPadding = PaddingValues(12.dp),
         state = state,
         modifier = Modifier.fillMaxSize()
@@ -863,7 +1026,7 @@ fun ArtistsGrid(artists: List<PlexArtist>, state: LazyGridState = rememberLazyGr
         items(artists, key = { it.ratingKey }) { artist ->
             Card(
                 modifier = Modifier
-                    .padding(6.dp)
+                    .padding(4.dp)
                     .clickable { onClick(artist) },
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
@@ -916,7 +1079,7 @@ fun AlbumsGrid(
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 160.dp),
+                columns = browseLibraryGridColumns(),
                 contentPadding = PaddingValues(12.dp),
                 state = state,
                 modifier = Modifier.weight(1f)
@@ -924,7 +1087,7 @@ fun AlbumsGrid(
                 items(albums, key = { it.ratingKey }) { album ->
                     Card(
                         modifier = Modifier
-                            .padding(6.dp)
+                            .padding(4.dp)
                             .clickable { onClick(album) },
                         shape = RoundedCornerShape(12.dp),
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
@@ -974,7 +1137,7 @@ fun PlaylistsGrid(playlists: List<PlexPlaylist>, state: LazyGridState = remember
     }
 
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 160.dp),
+        columns = browseLibraryGridColumns(),
         contentPadding = PaddingValues(12.dp),
         state = state,
         modifier = Modifier.fillMaxSize()
@@ -982,20 +1145,18 @@ fun PlaylistsGrid(playlists: List<PlexPlaylist>, state: LazyGridState = remember
         items(playlists, key = { it.ratingKey }) { playlist ->
             Card(
                 modifier = Modifier
-                    .padding(6.dp)
+                    .padding(4.dp)
                     .clickable { onClick(playlist) },
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    AsyncImage(
-                        model = playlist.thumbUrl,
-                        contentDescription = playlist.title,
+                    PlaylistGridCover(
+                        playlist = playlist,
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(1f)
-                            .clip(RoundedCornerShape(12.dp)),
-                        contentScale = ContentScale.Crop
+                            .clip(RoundedCornerShape(12.dp))
                     )
                     Text(
                         text = playlist.title,
@@ -1284,7 +1445,7 @@ fun MiniPlayer(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            
+
             Box(
                 modifier = Modifier
                     .clip(CircleShape)
@@ -1319,12 +1480,14 @@ fun FullPlayerScreen(
     onSeek: (Long) -> Unit,
     onClose: () -> Unit
 ) {
+    val configuration = LocalConfiguration.current
+    val isPortraitLayout = configuration.screenHeightDp > configuration.screenWidthDp
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF121214))
     ) {
-        // Blurred background artwork
         AsyncImage(
             model = mediaItem.mediaMetadata.artworkUri?.toString(),
             contentDescription = "Background",
@@ -1338,124 +1501,214 @@ fun FullPlayerScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(24.dp),
+                .padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Close header
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Start
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 56.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onClose) {
-                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Close", tint = Color.White, modifier = Modifier.size(36.dp))
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxSize(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(32.dp)
-            ) {
-                // High res Artwork (Left side)
-                Card(
-                    modifier = Modifier
-                        .size(320.dp)
-                        .aspectRatio(1f),
-                    shape = RoundedCornerShape(16.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.size(56.dp)
                 ) {
-                    AsyncImage(
-                        model = mediaItem.mediaMetadata.artworkUri?.toString(),
-                        contentDescription = "Artwork",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
+                    Icon(
+                        Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Close player",
+                        tint = Color.White,
+                        modifier = Modifier.size(32.dp)
                     )
                 }
+            }
 
-                // Controls and Details (Right side)
+            if (isPortraitLayout) {
                 Column(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(24.dp)
+                    verticalArrangement = Arrangement.spacedBy(20.dp)
                 ) {
-                    // Track details
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = mediaItem.mediaMetadata.title?.toString() ?: "Unknown Track",
-                            color = Color.White,
-                            fontSize = 28.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = mediaItem.mediaMetadata.artist?.toString() ?: "Unknown Artist",
-                            color = Color(0xFFFFE5A93B),
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-
-                    // Progress Slider
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Slider(
-                            value = progress.toFloat(),
-                            onValueChange = { onSeek(it.toLong()) },
-                            valueRange = 0f..(duration.toFloat().coerceAtLeast(1f)),
-                            colors = SliderDefaults.colors(
-                                activeTrackColor = Color(0xFFFFE5A93B),
-                                thumbColor = Color(0xFFFFE5A93B)
-                            )
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(formatTime(progress), color = Color.Gray, fontSize = 14.sp)
-                            Text(formatTime(duration), color = Color.Gray, fontSize = 14.sp)
-                        }
-                    }
-
-                    // Playback controls
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(onClick = onToggleShuffle) {
-                            Icon(
-                                imageVector = Icons.Default.Shuffle,
-                                contentDescription = "Shuffle",
-                                tint = if (shuffleModeEnabled) Color(0xFFFFE5A93B) else Color.White,
-                                modifier = Modifier.size(32.dp)
-                            )
-                        }
-                        IconButton(onClick = onPrevious) {
-                            Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", tint = Color.White, modifier = Modifier.size(56.dp))
-                        }
-                        Box(
-                            modifier = Modifier
-                                .size(72.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFFFFE5A93B))
-                                .clickable { onPlayPause() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = "Play/Pause",
-                                tint = Color.Black,
-                                modifier = Modifier.size(40.dp)
-                            )
-                        }
-                        IconButton(onClick = onNext) {
-                            Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = Color.White, modifier = Modifier.size(56.dp))
-                        }
-                        Spacer(modifier = Modifier.size(48.dp)) // balance for shuffle button
-                    }
+                    FullPlayerArtwork(
+                        mediaItem = mediaItem,
+                        modifier = Modifier
+                            .fillMaxWidth(0.88f)
+                            .aspectRatio(1f)
+                    )
+                    FullPlayerDetailsAndControls(
+                        mediaItem = mediaItem,
+                        isPlaying = isPlaying,
+                        shuffleModeEnabled = shuffleModeEnabled,
+                        progress = progress,
+                        duration = duration,
+                        onPlayPause = onPlayPause,
+                        onNext = onNext,
+                        onPrevious = onPrevious,
+                        onToggleShuffle = onToggleShuffle,
+                        onSeek = onSeek,
+                        titleFontSize = 24.sp,
+                        artistFontSize = 18.sp
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(32.dp)
+                ) {
+                    FullPlayerArtwork(
+                        mediaItem = mediaItem,
+                        modifier = Modifier
+                            .weight(1f)
+                            .aspectRatio(1f)
+                    )
+                    FullPlayerDetailsAndControls(
+                        mediaItem = mediaItem,
+                        isPlaying = isPlaying,
+                        shuffleModeEnabled = shuffleModeEnabled,
+                        progress = progress,
+                        duration = duration,
+                        onPlayPause = onPlayPause,
+                        onNext = onNext,
+                        onPrevious = onPrevious,
+                        onToggleShuffle = onToggleShuffle,
+                        onSeek = onSeek,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun FullPlayerArtwork(mediaItem: MediaItem, modifier: Modifier = Modifier) {
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+    ) {
+        AsyncImage(
+            model = mediaItem.mediaMetadata.artworkUri?.toString(),
+            contentDescription = "Artwork",
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+    }
+}
+
+@Composable
+private fun FullPlayerDetailsAndControls(
+    mediaItem: MediaItem,
+    isPlaying: Boolean,
+    shuffleModeEnabled: Boolean,
+    progress: Long,
+    duration: Long,
+    onPlayPause: () -> Unit,
+    onNext: () -> Unit,
+    onPrevious: () -> Unit,
+    onToggleShuffle: () -> Unit,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+    titleFontSize: androidx.compose.ui.unit.TextUnit = 28.sp,
+    artistFontSize: androidx.compose.ui.unit.TextUnit = 20.sp
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(24.dp)
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = mediaItem.mediaMetadata.title?.toString() ?: "Unknown Track",
+                color = Color.White,
+                fontSize = titleFontSize,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = mediaItem.mediaMetadata.artist?.toString() ?: "Unknown Artist",
+                color = Color(0xFFFFE5A93B),
+                fontSize = artistFontSize,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
+        }
+
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Slider(
+                value = progress.toFloat(),
+                onValueChange = { onSeek(it.toLong()) },
+                valueRange = 0f..(duration.toFloat().coerceAtLeast(1f)),
+                colors = SliderDefaults.colors(
+                    activeTrackColor = Color(0xFFFFE5A93B),
+                    thumbColor = Color(0xFFFFE5A93B)
+                )
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(formatTime(progress), color = Color.Gray, fontSize = 14.sp)
+                Text(formatTime(duration), color = Color.Gray, fontSize = 14.sp)
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = onToggleShuffle,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Shuffle,
+                    contentDescription = "Shuffle",
+                    tint = if (shuffleModeEnabled) Color(0xFFFFE5A93B) else Color.White,
+                    modifier = Modifier.size(32.dp)
+                )
+            }
+            IconButton(
+                onClick = onPrevious,
+                modifier = Modifier.size(56.dp)
+            ) {
+                Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", tint = Color.White, modifier = Modifier.size(48.dp))
+            }
+            Box(
+                modifier = Modifier
+                    .size(72.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFFFFE5A93B))
+                    .clickable { onPlayPause() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = "Play/Pause",
+                    tint = Color.Black,
+                    modifier = Modifier.size(40.dp)
+                )
+            }
+            IconButton(
+                onClick = onNext,
+                modifier = Modifier.size(56.dp)
+            ) {
+                Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = Color.White, modifier = Modifier.size(48.dp))
+            }
+            Spacer(modifier = Modifier.size(48.dp))
         }
     }
 }
