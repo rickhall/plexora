@@ -86,8 +86,13 @@ sealed class Screen {
     object Playlists : Screen()
     object Settings : Screen()
     data class ArtistAlbums(val artist: PlexArtist) : Screen()
-    data class AlbumTracks(val album: PlexAlbum, val fromArtist: Boolean = false, val fromRecentlyAdded: Boolean = false) : Screen()
+    data class AlbumTracks(val album: PlexAlbum) : Screen()
     data class PlaylistTracks(val playlist: PlexPlaylist) : Screen()
+}
+
+private fun Screen.isDetailDestination(): Boolean = when (this) {
+    is Screen.ArtistAlbums, is Screen.AlbumTracks, is Screen.PlaylistTracks -> true
+    else -> false
 }
 
 // ViewModel to manage connection and MediaController binding
@@ -99,6 +104,8 @@ class PlexoraViewModel : ViewModel() {
 
     private val _currentScreen = MutableStateFlow<Screen>(Screen.Setup)
     val currentScreen: StateFlow<Screen> = _currentScreen.asStateFlow()
+
+    private val navigationBackStack = ArrayDeque<Screen>()
 
     private val _mediaController = MutableStateFlow<MediaController?>(null)
     val mediaController: StateFlow<MediaController?> = _mediaController.asStateFlow()
@@ -216,12 +223,14 @@ class PlexoraViewModel : ViewModel() {
 
     fun saveConfig(context: Context, url: String, token: String, sectionId: String) {
         plexClient.saveConfig(url, token, sectionId) // Note: MachineId already saved during server selection
+        clearNavigationBackStack()
         _currentScreen.value = Screen.Artists
         loadArtists()
     }
 
     fun loadArtists() {
         _uiState.value = PlexUiState.Loading
+        clearNavigationBackStack()
         _currentScreen.value = Screen.Artists
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -235,6 +244,7 @@ class PlexoraViewModel : ViewModel() {
 
     fun loadAllAlbums() {
         _uiState.value = PlexUiState.Loading
+        clearNavigationBackStack()
         _currentScreen.value = Screen.AllAlbums
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -248,6 +258,7 @@ class PlexoraViewModel : ViewModel() {
 
     fun loadRecentlyAdded() {
         _uiState.value = PlexUiState.Loading
+        clearNavigationBackStack()
         _currentScreen.value = Screen.RecentlyAdded
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -261,6 +272,7 @@ class PlexoraViewModel : ViewModel() {
 
     fun loadPlaylists() {
         _uiState.value = PlexUiState.Loading
+        clearNavigationBackStack()
         _currentScreen.value = Screen.Playlists
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -273,7 +285,23 @@ class PlexoraViewModel : ViewModel() {
     }
 
     fun navigateTo(screen: Screen) {
+        if (screen.isDetailDestination()) {
+            navigationBackStack.addLast(_currentScreen.value)
+        } else {
+            clearNavigationBackStack()
+        }
         _currentScreen.value = screen
+    }
+
+    fun canNavigateBack(): Boolean = navigationBackStack.isNotEmpty()
+
+    fun navigateBack() {
+        if (navigationBackStack.isEmpty()) return
+        _currentScreen.value = navigationBackStack.removeLast()
+    }
+
+    private fun clearNavigationBackStack() {
+        navigationBackStack.clear()
     }
 
     fun stopPlayback() {
@@ -300,6 +328,7 @@ class PlexoraViewModel : ViewModel() {
 
             // 3. Reset UI state
             withContext(Dispatchers.Main) {
+                clearNavigationBackStack()
                 _currentScreen.value = Screen.Setup
                 _uiState.value = PlexUiState.ConfigNeeded
             }
@@ -480,8 +509,12 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
 
     var showFullPlayer by remember { mutableStateOf(false) }
 
-    BackHandler(enabled = showFullPlayer) {
-        showFullPlayer = false
+    BackHandler(enabled = showFullPlayer || viewModel.canNavigateBack()) {
+        if (showFullPlayer) {
+            showFullPlayer = false
+        } else {
+            viewModel.navigateBack()
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -600,7 +633,7 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                             when (val state = uiState) {
                                 is PlexUiState.Loading -> CircularLoading()
                                 is PlexUiState.AlbumsList -> AlbumsGrid(state.albums, state.title, state = recentlyAddedGridState) { album ->
-                                    viewModel.navigateTo(Screen.AlbumTracks(album, fromRecentlyAdded = true))
+                                    viewModel.navigateTo(Screen.AlbumTracks(album))
                                 }
                                 is PlexUiState.Error -> ErrorView(state.message) { viewModel.loadRecentlyAdded() }
                                 else -> {}
@@ -622,7 +655,7 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                         }
                         is Screen.AlbumTracks -> {
                             val state = currentScreen as Screen.AlbumTracks
-                            TracksScreen(state.album, state.fromArtist, state.fromRecentlyAdded, viewModel, state = albumTracksListState)
+                            TracksScreen(state.album, viewModel, state = albumTracksListState)
                         }
                         is Screen.PlaylistTracks -> {
                             val playlist = (currentScreen as Screen.PlaylistTracks).playlist
@@ -1205,7 +1238,7 @@ fun AlbumsScreen(artist: PlexArtist, viewModel: PlexoraViewModel, state: LazyGri
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = { viewModel.navigateTo(Screen.Artists) }) {
+            IconButton(onClick = { viewModel.navigateBack() }) {
                 Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
             Text(artist.title, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
@@ -1215,7 +1248,7 @@ fun AlbumsScreen(artist: PlexArtist, viewModel: PlexoraViewModel, state: LazyGri
             CircularLoading()
         } else {
             AlbumsGrid(albums = albums, state = state) { album ->
-                viewModel.navigateTo(Screen.AlbumTracks(album, fromArtist = true))
+                viewModel.navigateTo(Screen.AlbumTracks(album))
             }
         }
     }
@@ -1268,9 +1301,7 @@ fun PlaylistTracksScreen(playlist: PlexPlaylist, viewModel: PlexoraViewModel, st
         isLoading = isLoading,
         state = state,
         showOrdinalNumber = true,
-        onBack = {
-            viewModel.loadPlaylists()
-        },
+        onBack = { viewModel.navigateBack() },
         onTrackClick = { list, index ->
             viewModel.playTracks(list, index)
         }
@@ -1347,7 +1378,7 @@ fun TracksListContent(
 }
 
 @Composable
-fun TracksScreen(album: PlexAlbum, fromArtist: Boolean, fromRecentlyAdded: Boolean, viewModel: PlexoraViewModel, state: LazyListState = rememberLazyListState()) {
+fun TracksScreen(album: PlexAlbum, viewModel: PlexoraViewModel, state: LazyListState = rememberLazyListState()) {
     val context = LocalContext.current
     var tracks by remember { mutableStateOf<List<PlexTrack>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -1387,15 +1418,14 @@ fun TracksScreen(album: PlexAlbum, fromArtist: Boolean, fromRecentlyAdded: Boole
         }
     }
 
-    TracksListContent(title = album.title, tracks = tracks, isLoading = isLoading, state = state, showOrdinalNumber = false, onBack = {
-        if (fromArtist && album.artistRatingKey.isNotEmpty()) {
-            viewModel.navigateTo(Screen.ArtistAlbums(PlexArtist(album.artistRatingKey, album.artistTitle, null)))
-        } else if (fromRecentlyAdded) {
-            viewModel.loadRecentlyAdded()
-        } else {
-            viewModel.loadAllAlbums()
-        }
-    }, onTrackClick = { list, index ->
+    TracksListContent(
+        title = album.title,
+        tracks = tracks,
+        isLoading = isLoading,
+        state = state,
+        showOrdinalNumber = false,
+        onBack = { viewModel.navigateBack() },
+        onTrackClick = { list, index ->
         viewModel.playTracks(list, index)
     })
 }
