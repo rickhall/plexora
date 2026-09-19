@@ -28,9 +28,11 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -60,6 +62,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -124,6 +127,12 @@ class PlexoraViewModel : ViewModel() {
 
     private val _currentTrack = MutableStateFlow<MediaItem?>(null)
     val currentTrack: StateFlow<MediaItem?> = _currentTrack.asStateFlow()
+
+    private val _playbackQueue = MutableStateFlow<List<MediaItem>>(emptyList())
+    val playbackQueue: StateFlow<List<MediaItem>> = _playbackQueue.asStateFlow()
+
+    private val _currentQueueIndex = MutableStateFlow(0)
+    val currentQueueIndex: StateFlow<Int> = _currentQueueIndex.asStateFlow()
 
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private lateinit var plexClient: PlexClient
@@ -196,6 +205,11 @@ class PlexoraViewModel : ViewModel() {
                         _currentTrack.value = mediaItem
                         _playbackProgress.value = 0L
                         _playbackDuration.value = controller.duration.coerceAtLeast(0L)
+                        syncPlaybackQueue(controller)
+                    }
+
+                    override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                        syncPlaybackQueue(controller)
                     }
 
                     override fun onPlaybackStateChanged(playbackState: Int) {
@@ -210,6 +224,7 @@ class PlexoraViewModel : ViewModel() {
                 _currentTrack.value = controller?.currentMediaItem
                 _playbackProgress.value = controller?.currentPosition ?: 0L
                 _playbackDuration.value = controller?.duration?.coerceAtLeast(0L) ?: 0L
+                controller?.let { syncPlaybackQueue(it) }
             } catch (e: Exception) {
                 Log.e(tag, "Failed to connect MediaController", e)
             }
@@ -219,6 +234,23 @@ class PlexoraViewModel : ViewModel() {
     fun toggleShuffle() {
         val controller = _mediaController.value ?: return
         controller.shuffleModeEnabled = !controller.shuffleModeEnabled
+    }
+
+    fun seekToQueueItem(index: Int) {
+        val controller = _mediaController.value ?: return
+        if (index !in 0 until controller.mediaItemCount) return
+        controller.seekToDefaultPosition(index)
+        controller.play()
+    }
+
+    private fun syncPlaybackQueue(controller: Player) {
+        val items = buildList {
+            for (i in 0 until controller.mediaItemCount) {
+                add(controller.getMediaItemAt(i))
+            }
+        }
+        _playbackQueue.value = items
+        _currentQueueIndex.value = controller.currentMediaItemIndex.coerceAtLeast(0)
     }
 
     fun saveConfig(context: Context, url: String, token: String, sectionId: String) {
@@ -310,6 +342,8 @@ class PlexoraViewModel : ViewModel() {
             controller.clearMediaItems()
         }
         _currentTrack.value = null
+        _playbackQueue.value = emptyList()
+        _currentQueueIndex.value = 0
     }
 
     fun logout(context: Context) {
@@ -404,12 +438,100 @@ class PlexoraViewModel : ViewModel() {
         }
     }
 
+    fun playAlbumTrackList(album: PlexAlbum, tracks: List<PlexTrack>, startIndex: Int) {
+        playTracks(
+            tracks = tracks,
+            startIndex = startIndex,
+            queueSourceUri = albumPlayQueueSourceUri(album.ratingKey)
+        )
+    }
+
+    fun playPlaylistTrackList(playlist: PlexPlaylist, tracks: List<PlexTrack>, startIndex: Int) {
+        playTracks(
+            tracks = tracks,
+            startIndex = startIndex,
+            queueSourceUri = playlistPlayQueueSourceUri(playlist.ratingKey)
+        )
+    }
+
+    private fun albumPlayQueueSourceUri(albumRatingKey: String): String? {
+        val machineId = plexClient.getMachineId()
+        if (machineId.isEmpty()) return null
+        return "library://$machineId/item//library/metadata/$albumRatingKey"
+    }
+
+    private fun playlistPlayQueueSourceUri(playlistRatingKey: String): String? {
+        val machineId = plexClient.getMachineId()
+        if (machineId.isEmpty()) return null
+        return "library://$machineId/directory//playlists/$playlistRatingKey/items"
+    }
+
+    fun playTracks(
+        tracks: List<PlexTrack>,
+        startIndex: Int,
+        shuffle: Boolean = false,
+        playQueueId: String? = null,
+        queueSourceUri: String? = null
+    ) {
+        if (tracks.isEmpty()) return
+        val safeStart = startIndex.coerceIn(0, tracks.lastIndex)
+
+        if (playQueueId != null || shuffle) {
+            startPlayback(tracks, startIndex = 0, shuffle = shuffle, playQueueId = playQueueId)
+            return
+        }
+
+        if (queueSourceUri != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val startKey = tracks[safeStart].ratingKey
+                val playQueue = plexClient.createPlayQueue(
+                    sourceUri = queueSourceUri,
+                    shuffle = false,
+                    startRatingKey = startKey
+                )
+                withContext(Dispatchers.Main) {
+                    if (playQueue != null && playQueue.tracks.isNotEmpty()) {
+                        val queueStartIndex = playQueue.tracks.indexOfFirst { it.ratingKey == startKey }
+                            .let { if (it >= 0) it else 0 }
+                        startPlayback(
+                            tracks = playQueue.tracks,
+                            startIndex = queueStartIndex,
+                            shuffle = false,
+                            playQueueId = playQueue.id
+                        )
+                    } else {
+                        startPlayback(
+                            tracks = tracks.subList(safeStart, tracks.size),
+                            startIndex = 0,
+                            shuffle = false,
+                            playQueueId = null
+                        )
+                    }
+                }
+            }
+            return
+        }
+
+        startPlayback(
+            tracks = tracks.subList(safeStart, tracks.size),
+            startIndex = 0,
+            shuffle = false,
+            playQueueId = null
+        )
+    }
+
     @androidx.annotation.OptIn(UnstableApi::class)
-    fun playTracks(tracks: List<PlexTrack>, startIndex: Int, shuffle: Boolean = false, playQueueId: String? = null) {
+    private fun startPlayback(
+        tracks: List<PlexTrack>,
+        startIndex: Int,
+        shuffle: Boolean,
+        playQueueId: String?
+    ) {
+        if (tracks.isEmpty()) return
         val controller = _mediaController.value ?: return
+        val safeStart = startIndex.coerceIn(0, tracks.lastIndex)
 
         controller.shuffleModeEnabled = shuffle
-        // If we have a server-side queue ID, pass it to the service for persistence
         if (playQueueId != null) {
             val bundle = android.os.Bundle()
             bundle.putString("play_queue_id", playQueueId)
@@ -439,9 +561,10 @@ class PlexoraViewModel : ViewModel() {
                 .build()
         }
 
-        controller.setMediaItems(mediaItems, startIndex, 0L)
+        controller.setMediaItems(mediaItems, safeStart, 0L)
         controller.prepare()
         controller.play()
+        syncPlaybackQueue(controller)
     }
 
     override fun onCleared() {
@@ -497,6 +620,8 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
     val shuffleModeEnabled by viewModel.shuffleModeEnabled.collectAsStateWithLifecycle()
     val progress by viewModel.playbackProgress.collectAsStateWithLifecycle()
     val duration by viewModel.playbackDuration.collectAsStateWithLifecycle()
+    val playbackQueue by viewModel.playbackQueue.collectAsStateWithLifecycle()
+    val currentQueueIndex by viewModel.currentQueueIndex.collectAsStateWithLifecycle()
     val controller by viewModel.mediaController.collectAsStateWithLifecycle()
 
     val artistsGridState = rememberLazyGridState()
@@ -698,7 +823,10 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                 onPrevious = { controller?.seekToPrevious() },
                 onToggleShuffle = { viewModel.toggleShuffle() },
                 onSeek = { pos -> controller?.seekTo(pos) },
-                onClose = { showFullPlayer = false }
+                onClose = { showFullPlayer = false },
+                queueItems = playbackQueue,
+                currentQueueIndex = currentQueueIndex,
+                onQueueItemSelected = { index -> viewModel.seekToQueueItem(index) }
             )
         }
     }
@@ -1303,7 +1431,7 @@ fun PlaylistTracksScreen(playlist: PlexPlaylist, viewModel: PlexoraViewModel, st
         showOrdinalNumber = true,
         onBack = { viewModel.navigateBack() },
         onTrackClick = { list, index ->
-            viewModel.playTracks(list, index)
+            viewModel.playPlaylistTrackList(playlist, list, index)
         }
     )
 }
@@ -1426,8 +1554,9 @@ fun TracksScreen(album: PlexAlbum, viewModel: PlexoraViewModel, state: LazyListS
         showOrdinalNumber = false,
         onBack = { viewModel.navigateBack() },
         onTrackClick = { list, index ->
-        viewModel.playTracks(list, index)
-    })
+            viewModel.playAlbumTrackList(album, list, index)
+        }
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1503,6 +1632,7 @@ fun MiniPlayer(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FullPlayerScreen(
     mediaItem: MediaItem,
@@ -1516,10 +1646,19 @@ fun FullPlayerScreen(
     onToggleShuffle: () -> Unit,
     onSeek: (Long) -> Unit,
     onClose: () -> Unit,
+    queueItems: List<MediaItem>,
+    currentQueueIndex: Int,
+    onQueueItemSelected: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val configuration = LocalConfiguration.current
     val isPortraitLayout = configuration.screenHeightDp > configuration.screenWidthDp
+    var showQueue by remember { mutableStateOf(false) }
+    val queueSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    BackHandler(enabled = showQueue) {
+        showQueue = false
+    }
 
     Box(
         modifier = modifier
@@ -1575,6 +1714,8 @@ fun FullPlayerScreen(
                         onPrevious = onPrevious,
                         onToggleShuffle = onToggleShuffle,
                         onSeek = onSeek,
+                        onShowQueue = { showQueue = true },
+                        showQueueButton = queueItems.isNotEmpty(),
                         titleFontSize = 24.sp,
                         artistFontSize = 18.sp
                     )
@@ -1607,10 +1748,136 @@ fun FullPlayerScreen(
                         onPrevious = onPrevious,
                         onToggleShuffle = onToggleShuffle,
                         onSeek = onSeek,
+                        onShowQueue = { showQueue = true },
+                        showQueueButton = queueItems.isNotEmpty(),
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight()
                     )
+                }
+            }
+        }
+
+        if (showQueue) {
+            ModalBottomSheet(
+                onDismissRequest = { showQueue = false },
+                sheetState = queueSheetState,
+                containerColor = Color(0xFF1E1E24),
+                dragHandle = {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(40.dp)
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(Color.White.copy(alpha = 0.35f))
+                        )
+                    }
+                }
+            ) {
+                PlaybackQueueSheet(
+                    queueItems = queueItems,
+                    currentIndex = currentQueueIndex,
+                    onItemSelected = { index ->
+                        onQueueItemSelected(index)
+                        showQueue = false
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 24.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaybackQueueSheet(
+    queueItems: List<MediaItem>,
+    currentIndex: Int,
+    onItemSelected: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(currentIndex, queueItems.size) {
+        if (queueItems.isNotEmpty() && currentIndex in queueItems.indices) {
+            listState.scrollToItem(currentIndex)
+        }
+    }
+
+    Column(modifier = modifier) {
+        Text(
+            text = "Up next",
+            color = Color.White,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+        )
+        Text(
+            text = "${queueItems.size} tracks",
+            color = Color.Gray,
+            fontSize = 14.sp,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 0.dp)
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        if (queueItems.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("Nothing queued.", color = Color.Gray)
+            }
+        } else {
+            LazyColumn(state = listState) {
+                itemsIndexed(queueItems) { index, item ->
+                    val isCurrent = index == currentIndex
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(if (isCurrent) Color(0xFF2A2A32) else Color.Transparent)
+                            .clickable { onItemSelected(index) }
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "${index + 1}.",
+                            color = if (isCurrent) Color(0xFFFFE5A93B) else Color.Gray,
+                            modifier = Modifier.width(32.dp),
+                            fontWeight = FontWeight.Bold
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = item.mediaMetadata.title?.toString() ?: "Unknown Track",
+                                color = Color.White,
+                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = item.mediaMetadata.artist?.toString() ?: "",
+                                color = Color.Gray,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (isCurrent) {
+                            Icon(
+                                imageVector = Icons.Default.GraphicEq,
+                                contentDescription = "Now playing",
+                                tint = Color(0xFFFFE5A93B),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                    HorizontalDivider(color = Color(0xFF232329))
                 }
             }
         }
@@ -1689,6 +1956,8 @@ private fun FullPlayerDetailsAndControls(
     onPrevious: () -> Unit,
     onToggleShuffle: () -> Unit,
     onSeek: (Long) -> Unit,
+    onShowQueue: () -> Unit,
+    showQueueButton: Boolean,
     modifier: Modifier = Modifier,
     titleFontSize: androidx.compose.ui.unit.TextUnit = 28.sp,
     artistFontSize: androidx.compose.ui.unit.TextUnit = 20.sp
@@ -1782,7 +2051,21 @@ private fun FullPlayerDetailsAndControls(
             ) {
                 Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = Color.White, modifier = Modifier.size(48.dp))
             }
-            Spacer(modifier = Modifier.size(48.dp))
+            if (showQueueButton) {
+                IconButton(
+                    onClick = onShowQueue,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                        contentDescription = "View queue",
+                        tint = Color.White,
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
+            } else {
+                Spacer(modifier = Modifier.size(48.dp))
+            }
         }
     }
 }
