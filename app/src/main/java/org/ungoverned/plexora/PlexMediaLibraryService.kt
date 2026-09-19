@@ -302,6 +302,31 @@ class PlexMediaLibraryService : MediaLibraryService() {
         return MediaSession.MediaItemsWithStartPosition(mediaItems, startIndex, 0L)
     }
 
+    private fun resolveExplicitMediaItems(
+        mediaItems: List<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long
+    ): MediaSession.MediaItemsWithStartPosition? {
+        val resolved = mutableListOf<MediaItem>()
+        for (item in mediaItems) {
+            when {
+                item.localConfiguration?.uri != null -> resolved.add(item)
+                item.mediaId.startsWith("track_") -> {
+                    plexClient.getTrack(item.mediaId.removePrefix("track_"))?.let {
+                        resolved.add(createMediaItem(it))
+                    }
+                }
+                else -> resolved.add(item)
+            }
+        }
+        if (resolved.isEmpty()) return null
+        return MediaSession.MediaItemsWithStartPosition(
+            resolved,
+            startIndex,
+            startPositionMs
+        )
+    }
+
     private fun resolveSetMediaItems(
         mediaItems: List<MediaItem>,
         startIndex: Int,
@@ -314,6 +339,13 @@ class PlexMediaLibraryService : MediaLibraryService() {
                 C.TIME_UNSET
             )
         }
+
+        // Mobile (and other clients) may send a full playlist/album queue from a Plex playQueue.
+        // Do not collapse that into a single-track album queue.
+        if (mediaItems.size > 1) {
+            resolveExplicitMediaItems(mediaItems, startIndex, startPositionMs)?.let { return it }
+        }
+
         val first = mediaItems.first()
         when {
             first.mediaId.startsWith("shuffle::") -> {
@@ -339,25 +371,7 @@ class PlexMediaLibraryService : MediaLibraryService() {
                 }
             }
             else -> {
-                val resolved = mutableListOf<MediaItem>()
-                for (item in mediaItems) {
-                    when {
-                        item.localConfiguration?.uri != null -> resolved.add(item)
-                        item.mediaId.startsWith("track_") -> {
-                            plexClient.getTrack(item.mediaId.removePrefix("track_"))?.let {
-                                resolved.add(createMediaItem(it))
-                            }
-                        }
-                        else -> resolved.add(item)
-                    }
-                }
-                if (resolved.isNotEmpty()) {
-                    return MediaSession.MediaItemsWithStartPosition(
-                        resolved,
-                        startIndex,
-                        startPositionMs
-                    )
-                }
+                resolveExplicitMediaItems(mediaItems, startIndex, startPositionMs)?.let { return it }
             }
         }
         return MediaSession.MediaItemsWithStartPosition(
