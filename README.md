@@ -52,10 +52,14 @@ The **mobile** flavor includes `MainActivity` with the custom Compose interface 
 
 Version codes: mobile uses `appVersionCode`; automotive adds `1_000_000`.
 
-| Flavor | `versionCode` | `versionName` |
-|--------|---------------|---------------|
-| **mobile** | 9 | 1.0 |
-| **automotive** | 1000009 | 1.0 |
+| Flavor | `versionCode` | `versionName` | `targetSdk` |
+|--------|---------------|---------------|-------------|
+| **mobile** | 9 | 1.0 | 36 (Play phone/tablet updates) |
+| **automotive** | 1000009 | 1.0 | 35 (AAOS) |
+
+### Google Play target API levels
+
+Phone and tablet builds (**mobile**) must target **API 36+** for Play updates. **automotive** stays on **API 35**, which matches Android Automotive OS requirements. Both flavors share `compileSdk = 36` in Gradle; only `targetSdk` differs by flavor.
 
 ### Signed release (Android Studio)
 
@@ -84,6 +88,7 @@ Use these in Play Console when uploading **mobileRelease** / **automotiveRelease
 
 ### Mobile (version code 9)
 
+- Targets Android API 36 for Google Play policy compliance
 - Improved Plex linking setup and full-height sign-in flow
 - Narrow-screen browse grids and playlist cover art (composite / mosaic)
 - Now playing: portrait layout, swipe-down dismiss, system back stack

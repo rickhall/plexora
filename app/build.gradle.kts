@@ -12,11 +12,12 @@ val automotiveVersionCodeOffset = 1_000_000
 
 android {
     namespace = "org.ungoverned.plexora"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "org.ungoverned.plexora"
         minSdk = 26
+        // Automotive stays on 35 (AAOS Play requirement). Mobile overrides to 36 below.
         targetSdk = 35
         versionCode = appVersionCode
         versionName = appVersionName
@@ -32,11 +33,13 @@ android {
         create("automotive") {
             dimension = "platform"
             minSdk = 28
+            targetSdk = 35
             versionCode = appVersionCode + automotiveVersionCodeOffset
         }
         create("mobile") {
             dimension = "platform"
             isDefault = true
+            targetSdk = 36
         }
     }
 
