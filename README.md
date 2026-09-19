@@ -50,7 +50,12 @@ The **mobile** flavor includes `MainActivity` with the custom Compose interface 
 ./gradlew bundleMobileRelease
 ```
 
-Version codes: mobile uses `appVersionCode`; automotive adds `1_000_000` (e.g. 8 → 1000008).
+Version codes: mobile uses `appVersionCode`; automotive adds `1_000_000`.
+
+| Flavor | `versionCode` | `versionName` |
+|--------|---------------|---------------|
+| **mobile** | 9 | 1.0 |
+| **automotive** | 1000009 | 1.0 |
 
 ### Signed release (Android Studio)
 
@@ -72,6 +77,24 @@ Add the following under **Play Console → App content → App access** (or rele
 > 5. Return to the media browser — Artists, Albums, Playlists, and playback should work.
 
 Playback from an album or playlist queues remaining tracks in order (or shuffled via the Shuffle items). Large libraries are loaded in pages so artists and albums beyond the first screen remain browsable.
+
+## Release notes (version 9)
+
+Use these in Play Console when uploading **mobileRelease** / **automotiveRelease** bundles for version code **9** / **1000009**.
+
+### Mobile (version code 9)
+
+- Improved Plex linking setup and full-height sign-in flow
+- Narrow-screen browse grids and playlist cover art (composite / mosaic)
+- Now playing: portrait layout, swipe-down dismiss, system back stack
+- Up next queue viewer from the full player
+- Tap-to-play and shuffle use the correct album or playlist queue (not the track’s album only)
+- Back navigation stack for drill-down screens (back exits only from top-level tabs)
+
+### Automotive (version code 1000009)
+
+- Playback queue handling when the client sends a multi-track queue (fixes playlist shuffle and ordered play expanding to the wrong album)
+- Includes shared media session fixes from mobile release; AAOS browse and shuffle behavior unchanged from 1.0 (8)
 
 ## Technical stack
 

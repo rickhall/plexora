@@ -6,7 +6,7 @@ plugins {
 }
 
 // Bump this once per release; automotive flavor gets the offset automatically.
-val appVersionCode = 8
+val appVersionCode = 9
 val appVersionName = "1.0"
 val automotiveVersionCodeOffset = 1_000_000
 
