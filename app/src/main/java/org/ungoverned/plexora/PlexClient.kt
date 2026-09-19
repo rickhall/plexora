@@ -79,9 +79,9 @@ data class PlexPlayQueue(
 )
 
 class PlexClient(private val context: Context) {
-    
+
     private val tag = "PlexClient"
-    
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(3, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.SECONDS)
@@ -93,7 +93,7 @@ class PlexClient(private val context: Context) {
         .addInterceptor { chain ->
             val request = chain.request()
             val response = chain.proceed(request)
-            
+
             // Force caching for 1 hour for all successful library queries
             response.newBuilder()
                 .header("Cache-Control", "public, max-age=3600")
@@ -124,7 +124,7 @@ class PlexClient(private val context: Context) {
             .putString("server_url", cleanUrl)
             .putString("plex_token", token)
             .putString("section_id", sectionId)
-        
+
         if (machineId.isNotEmpty()) {
             editor.putString("machine_id", machineId)
         }
@@ -331,6 +331,13 @@ class PlexClient(private val context: Context) {
         return buildUrl(if (path.startsWith("/")) path else "/$path")
     }
 
+    /** Plex-generated mosaic of album art for a playlist, or explicit thumb when set. */
+    fun getPlaylistArtUrl(ratingKey: String, thumbPath: String?): String? {
+        getImageUrl(thumbPath)?.let { return it }
+        if (getServerUrl().isEmpty()) return null
+        return buildUrl("/library/metadata/$ratingKey/composite")
+    }
+
     private fun executeGetRequest(url: String): String? {
         val request = Request.Builder().url(url).addHeader("Accept", "application/json").build()
         return try {
@@ -425,7 +432,14 @@ class PlexClient(private val context: Context) {
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 if (obj.optString("playlistType") == "audio") {
-                    playlists.add(PlexPlaylist(obj.getString("ratingKey"), obj.getString("title"), getImageUrl(obj.optString("thumb", null))))
+                    val ratingKey = obj.getString("ratingKey")
+                    playlists.add(
+                        PlexPlaylist(
+                            ratingKey,
+                            obj.getString("title"),
+                            getPlaylistArtUrl(ratingKey, obj.optString("thumb", null))
+                        )
+                    )
                 }
             }
         } catch (e: Exception) {}
@@ -438,7 +452,12 @@ class PlexClient(private val context: Context) {
             val array = JSONObject(jsonStr).getJSONObject("MediaContainer").optJSONArray("Metadata") ?: return null
             if (array.length() > 0) {
                 val obj = array.getJSONObject(0)
-                return PlexPlaylist(obj.getString("ratingKey"), obj.getString("title"), getImageUrl(obj.optString("thumb", null)))
+                val ratingKey = obj.getString("ratingKey")
+                return PlexPlaylist(
+                    ratingKey,
+                    obj.getString("title"),
+                    getPlaylistArtUrl(ratingKey, obj.optString("thumb", null))
+                )
             }
         } catch (e: Exception) {}
         return null
@@ -514,7 +533,14 @@ class PlexClient(private val context: Context) {
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 if (obj.optString("playlistType") == "audio") {
-                    playlists.add(PlexPlaylist(obj.getString("ratingKey"), obj.getString("title"), getImageUrl(obj.optString("thumb", null))))
+                    val ratingKey = obj.getString("ratingKey")
+                    playlists.add(
+                        PlexPlaylist(
+                            ratingKey,
+                            obj.getString("title"),
+                            getPlaylistArtUrl(ratingKey, obj.optString("thumb", null))
+                        )
+                    )
                 }
             }
             return PlexPagedList(playlists, totalSize)
@@ -597,7 +623,7 @@ class PlexClient(private val context: Context) {
         )
         startRatingKey?.let { params["key"] = it }
         val url = buildUrl("/playQueues", params)
-        
+
         val request = Request.Builder()
             .url(url)
             .post(okhttp3.RequestBody.create(null, ByteArray(0)))
@@ -632,7 +658,7 @@ class PlexClient(private val context: Context) {
             Log.e(tag, "Missing config for library shuffle: machineId='$machineId', sectionId='$sectionId'")
             return null
         }
-        
+
         // This URI format is confirmed to work for music library shuffles
         val sourceUri = "library://$machineId/directory//library/sections/$sectionId/all"
         return createPlayQueue(sourceUri)
@@ -649,7 +675,7 @@ class PlexClient(private val context: Context) {
             val container = root.optJSONObject("MediaContainer") ?: return null
             val id = container.optString("playQueueID")
             val tracks = parseTracksFromContainer(container)
-            
+
             if (id.isNotEmpty() && tracks.isNotEmpty()) {
                 return PlexPlayQueue(id, tracks)
             }
