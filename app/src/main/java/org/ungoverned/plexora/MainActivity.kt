@@ -884,12 +884,7 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                 if (currentScreen != Screen.Setup) {
                 TopAppBar(
                     title = {
-                        Text(
-                            "PLEXORA",
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFFFE5A93B),
-                            letterSpacing = 2.sp
-                        )
+                        BrowseTopAppBarTitle(currentScreen = currentScreen)
                     },
                     actions = {
                         val tabRefreshing = when (currentScreen) {
@@ -964,7 +959,6 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                                 allAlbumsState.showTabLoading() -> CircularLoading()
                                 allAlbumsState.data != null -> AlbumsGrid(
                                     allAlbumsState.data!!,
-                                    "All Albums",
                                     state = allAlbumsGridState
                                 ) { album ->
                                     viewModel.navigateTo(Screen.AlbumTracks(album))
@@ -979,7 +973,6 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                                 recentAlbumsState.showTabLoading() -> CircularLoading()
                                 recentAlbumsState.data != null -> AlbumsGrid(
                                     recentAlbumsState.data!!,
-                                    "Recently Added",
                                     state = recentlyAddedGridState
                                 ) { album ->
                                     viewModel.navigateTo(Screen.AlbumTracks(album))
@@ -1388,6 +1381,45 @@ fun SetupScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun BrowseTopAppBarTitle(currentScreen: Screen) {
+    val gold = Color(0xFFFFE5A93B)
+    val sectionTitle = when (currentScreen) {
+        is Screen.Artists -> "Artists"
+        is Screen.AllAlbums -> "Albums"
+        is Screen.RecentlyAdded -> "Recently Added"
+        is Screen.Playlists -> "Playlists"
+        is Screen.Settings -> "Settings"
+        else -> null
+    }
+    if (sectionTitle != null) {
+        Column {
+            Text(
+                text = "PLEXORA",
+                color = gold,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp,
+                lineHeight = 12.sp
+            )
+            Text(
+                text = sectionTitle,
+                color = Color.White,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                lineHeight = 24.sp
+            )
+        }
+    } else {
+        Text(
+            text = "PLEXORA",
+            fontWeight = FontWeight.Bold,
+            color = gold,
+            letterSpacing = 2.sp
+        )
     }
 }
 
