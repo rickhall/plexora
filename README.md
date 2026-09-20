@@ -54,8 +54,8 @@ Version codes: mobile uses `appVersionCode`; automotive adds `1_000_000`.
 
 | Flavor | `versionCode` | `versionName` | `targetSdk` |
 |--------|---------------|---------------|-------------|
-| **mobile** | 9 | 1.0 | 36 (Play phone/tablet updates) |
-| **automotive** | 1000009 | 1.0 | 35 (AAOS) |
+| **mobile** | 10 | 1.0 | 36 (Play phone/tablet updates) |
+| **automotive** | 1000010 | 1.0 | 35 (AAOS) |
 
 ### Google Play target API levels
 

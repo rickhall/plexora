@@ -3,6 +3,7 @@ package org.ungoverned.plexora
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import okhttp3.CacheControl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -81,6 +82,10 @@ data class PlexPlayQueue(
 class PlexClient(private val context: Context) {
 
     private val tag = "PlexClient"
+
+    companion object {
+        private const val LIBRARY_PAGE_SIZE = 500
+    }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(3, TimeUnit.SECONDS)
@@ -338,13 +343,55 @@ class PlexClient(private val context: Context) {
         return buildUrl("/library/metadata/$ratingKey/composite")
     }
 
-    private fun executeGetRequest(url: String): String? {
-        val request = Request.Builder().url(url).addHeader("Accept", "application/json").build()
+    private fun executeGetRequest(url: String, forceNetwork: Boolean = false): String? {
+        val requestBuilder = Request.Builder().url(url).addHeader("Accept", "application/json")
+        if (forceNetwork) {
+            requestBuilder.cacheControl(CacheControl.FORCE_NETWORK)
+        }
+        val request = requestBuilder.build()
         return try {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) null else response.body?.string()
+                if (!response.isSuccessful) {
+                    Log.w(tag, "HTTP ${response.code} for ${url.substringBefore('?')}")
+                    null
+                } else {
+                    response.body?.string()
+                }
             }
-        } catch (e: IOException) { null }
+        } catch (e: IOException) {
+            Log.w(tag, "Request failed for ${url.substringBefore('?')}", e)
+            null
+        }
+    }
+
+    private fun <T> fetchAllPages(
+        forceNetwork: Boolean,
+        fetchPage: (offset: Int, limit: Int) -> PlexPagedList<T>
+    ): List<T> {
+        val all = mutableListOf<T>()
+        var offset = 0
+        var reportedTotal: Int? = null
+        while (true) {
+            val page = fetchPage(offset, LIBRARY_PAGE_SIZE)
+            if (reportedTotal == null) {
+                reportedTotal = page.totalSize
+                if (page.items.isEmpty() && page.totalSize > 0) {
+                    throw IOException(
+                        "Plex reported ${page.totalSize} items but returned none (page size may be too large)"
+                    )
+                }
+            }
+            if (page.items.isEmpty()) break
+            all.addAll(page.items)
+            offset += page.items.size
+            val total = reportedTotal ?: page.totalSize
+            if (all.size >= total || page.items.size < LIBRARY_PAGE_SIZE) break
+        }
+        return all
+    }
+
+    private fun plexRequestFailed(message: String): Nothing {
+        throw IOException(message)
     }
 
     fun getMusicSections(): List<PlexSection> {
@@ -364,11 +411,12 @@ class PlexClient(private val context: Context) {
         return sections
     }
 
-    fun getArtists(): List<PlexArtist> {
-        return getArtistsPaged(0, Int.MAX_VALUE).items
-    }
+    fun getArtists(forceNetwork: Boolean = false): List<PlexArtist> =
+        fetchAllPages(forceNetwork) { offset, limit ->
+            getArtistsPaged(offset, limit, forceNetwork)
+        }
 
-    fun getArtistsPaged(offset: Int, limit: Int): PlexPagedList<PlexArtist> {
+    fun getArtistsPaged(offset: Int, limit: Int, forceNetwork: Boolean = false): PlexPagedList<PlexArtist> {
         return getArtistsPagedByUrl(
             buildUrl(
                 "/library/sections/${getLibrarySection()}/all",
@@ -377,7 +425,8 @@ class PlexClient(private val context: Context) {
                     "X-Plex-Container-Start" to offset.toString(),
                     "X-Plex-Container-Size" to limit.toString()
                 )
-            )
+            ),
+            forceNetwork
         )
     }
 
@@ -385,11 +434,12 @@ class PlexClient(private val context: Context) {
         return getArtistsByUrl(buildUrl("/library/metadata/$artistRatingKey")).firstOrNull()
     }
 
-    fun getRecentlyAddedAlbums(): List<PlexAlbum> {
-        return getRecentlyAddedAlbumsPaged(0, Int.MAX_VALUE).items
-    }
+    fun getRecentlyAddedAlbums(forceNetwork: Boolean = false): List<PlexAlbum> =
+        fetchAllPages(forceNetwork) { offset, limit ->
+            getRecentlyAddedAlbumsPaged(offset, limit, forceNetwork)
+        }
 
-    fun getRecentlyAddedAlbumsPaged(offset: Int, limit: Int): PlexPagedList<PlexAlbum> {
+    fun getRecentlyAddedAlbumsPaged(offset: Int, limit: Int, forceNetwork: Boolean = false): PlexPagedList<PlexAlbum> {
         return getAlbumsPagedByUrl(
             buildUrl(
                 "/library/sections/${getLibrarySection()}/recentlyAdded",
@@ -398,15 +448,17 @@ class PlexClient(private val context: Context) {
                     "X-Plex-Container-Start" to offset.toString(),
                     "X-Plex-Container-Size" to limit.toString()
                 )
-            )
+            ),
+            forceNetwork
         )
     }
 
-    fun getAllAlbums(): List<PlexAlbum> {
-        return getAllAlbumsPaged(0, Int.MAX_VALUE).items
-    }
+    fun getAllAlbums(forceNetwork: Boolean = false): List<PlexAlbum> =
+        fetchAllPages(forceNetwork) { offset, limit ->
+            getAllAlbumsPaged(offset, limit, forceNetwork)
+        }
 
-    fun getAllAlbumsPaged(offset: Int, limit: Int): PlexPagedList<PlexAlbum> {
+    fun getAllAlbumsPaged(offset: Int, limit: Int, forceNetwork: Boolean = false): PlexPagedList<PlexAlbum> {
         return getAlbumsPagedByUrl(
             buildUrl(
                 "/library/sections/${getLibrarySection()}/all",
@@ -416,7 +468,8 @@ class PlexClient(private val context: Context) {
                     "X-Plex-Container-Start" to offset.toString(),
                     "X-Plex-Container-Size" to limit.toString()
                 )
-            )
+            ),
+            forceNetwork
         )
     }
 
@@ -424,27 +477,10 @@ class PlexClient(private val context: Context) {
         return getAlbumsByUrl(buildUrl("/library/metadata/$albumRatingKey")).firstOrNull()
     }
 
-    fun getPlaylists(): List<PlexPlaylist> {
-        val jsonStr = executeGetRequest(buildUrl("/playlists")) ?: return emptyList()
-        val playlists = mutableListOf<PlexPlaylist>()
-        try {
-            val array = JSONObject(jsonStr).getJSONObject("MediaContainer").optJSONArray("Metadata") ?: return emptyList()
-            for (i in 0 until array.length()) {
-                val obj = array.getJSONObject(i)
-                if (obj.optString("playlistType") == "audio") {
-                    val ratingKey = obj.getString("ratingKey")
-                    playlists.add(
-                        PlexPlaylist(
-                            ratingKey,
-                            obj.getString("title"),
-                            getPlaylistArtUrl(ratingKey, obj.optString("thumb", null))
-                        )
-                    )
-                }
-            }
-        } catch (e: Exception) {}
-        return playlists
-    }
+    fun getPlaylists(forceNetwork: Boolean = false): List<PlexPlaylist> =
+        fetchAllPages(forceNetwork) { offset, limit ->
+            getPlaylistsPaged(offset, limit, forceNetwork)
+        }
 
     fun getPlaylist(playlistRatingKey: String): PlexPlaylist? {
         val jsonStr = executeGetRequest(buildUrl("/playlists/$playlistRatingKey")) ?: return null
@@ -479,19 +515,38 @@ class PlexClient(private val context: Context) {
         return getArtistsPagedByUrl(url).items
     }
 
-    private fun getArtistsPagedByUrl(url: String): PlexPagedList<PlexArtist> {
-        val jsonStr = executeGetRequest(url) ?: return PlexPagedList(emptyList(), 0)
+    private fun getArtistsPagedByUrl(url: String, forceNetwork: Boolean = false): PlexPagedList<PlexArtist> {
+        val jsonStr = executeGetRequest(url, forceNetwork)
+            ?: return if (forceNetwork) {
+                plexRequestFailed("Failed to load artists from Plex")
+            } else {
+                PlexPagedList(emptyList(), 0)
+            }
         val artists = mutableListOf<PlexArtist>()
         try {
             val container = JSONObject(jsonStr).getJSONObject("MediaContainer")
             val totalSize = container.optInt("totalSize", container.optInt("size", 0))
-            val array = container.optJSONArray("Metadata") ?: return PlexPagedList(emptyList(), totalSize)
+            val array = container.optJSONArray("Metadata")
+                ?: return if (forceNetwork && totalSize > 0) {
+                    plexRequestFailed("Plex returned no artist metadata (totalSize=$totalSize)")
+                } else {
+                    PlexPagedList(emptyList(), totalSize)
+                }
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
-                artists.add(PlexArtist(obj.getString("ratingKey"), obj.getString("title"), getImageUrl(obj.optString("thumb", null))))
+                artists.add(
+                    PlexArtist(
+                        obj.getString("ratingKey"),
+                        obj.getString("title"),
+                        getImageUrl(obj.optString("thumb").ifEmpty { null })
+                    )
+                )
             }
             return PlexPagedList(artists, totalSize)
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            Log.e(tag, "Error parsing artists", e)
+            if (forceNetwork) throw IOException("Failed to parse artists: ${e.message}", e)
+        }
         return PlexPagedList(emptyList(), 0)
     }
 
@@ -499,23 +554,44 @@ class PlexClient(private val context: Context) {
         return getAlbumsPagedByUrl(url).items
     }
 
-    private fun getAlbumsPagedByUrl(url: String): PlexPagedList<PlexAlbum> {
-        val jsonStr = executeGetRequest(url) ?: return PlexPagedList(emptyList(), 0)
+    private fun getAlbumsPagedByUrl(url: String, forceNetwork: Boolean = false): PlexPagedList<PlexAlbum> {
+        val jsonStr = executeGetRequest(url, forceNetwork)
+            ?: return if (forceNetwork) {
+                plexRequestFailed("Failed to load albums from Plex")
+            } else {
+                PlexPagedList(emptyList(), 0)
+            }
         val albums = mutableListOf<PlexAlbum>()
         try {
             val container = JSONObject(jsonStr).getJSONObject("MediaContainer")
             val totalSize = container.optInt("totalSize", container.optInt("size", 0))
-            val array = container.optJSONArray("Metadata") ?: return PlexPagedList(emptyList(), totalSize)
+            val array = container.optJSONArray("Metadata")
+                ?: return if (forceNetwork && totalSize > 0) {
+                    plexRequestFailed("Plex returned no album metadata (totalSize=$totalSize)")
+                } else {
+                    PlexPagedList(emptyList(), totalSize)
+                }
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
-                albums.add(PlexAlbum(obj.getString("ratingKey"), obj.optString("parentRatingKey", ""), obj.getString("title"), obj.optString("parentTitle", "Unknown Artist"), getImageUrl(obj.optString("thumb", null))))
+                albums.add(
+                    PlexAlbum(
+                        obj.getString("ratingKey"),
+                        obj.optString("parentRatingKey", ""),
+                        obj.getString("title"),
+                        obj.optString("parentTitle", "Unknown Artist"),
+                        getImageUrl(obj.optString("thumb").ifEmpty { null })
+                    )
+                )
             }
             return PlexPagedList(albums, totalSize)
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            Log.e(tag, "Error parsing albums", e)
+            if (forceNetwork) throw IOException("Failed to parse albums: ${e.message}", e)
+        }
         return PlexPagedList(emptyList(), 0)
     }
 
-    fun getPlaylistsPaged(offset: Int, limit: Int): PlexPagedList<PlexPlaylist> {
+    fun getPlaylistsPaged(offset: Int, limit: Int, forceNetwork: Boolean = false): PlexPagedList<PlexPlaylist> {
         val jsonStr = executeGetRequest(
             buildUrl(
                 "/playlists",
@@ -523,13 +599,23 @@ class PlexClient(private val context: Context) {
                     "X-Plex-Container-Start" to offset.toString(),
                     "X-Plex-Container-Size" to limit.toString()
                 )
-            )
-        ) ?: return PlexPagedList(emptyList(), 0)
+            ),
+            forceNetwork
+        ) ?: return if (forceNetwork) {
+            plexRequestFailed("Failed to load playlists from Plex")
+        } else {
+            PlexPagedList(emptyList(), 0)
+        }
         val playlists = mutableListOf<PlexPlaylist>()
         try {
             val container = JSONObject(jsonStr).getJSONObject("MediaContainer")
             val totalSize = container.optInt("totalSize", container.optInt("size", 0))
-            val array = container.optJSONArray("Metadata") ?: return PlexPagedList(emptyList(), totalSize)
+            val array = container.optJSONArray("Metadata")
+                ?: return if (forceNetwork && totalSize > 0) {
+                    plexRequestFailed("Plex returned no playlist metadata (totalSize=$totalSize)")
+                } else {
+                    PlexPagedList(emptyList(), totalSize)
+                }
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 if (obj.optString("playlistType") == "audio") {
@@ -538,21 +624,25 @@ class PlexClient(private val context: Context) {
                         PlexPlaylist(
                             ratingKey,
                             obj.getString("title"),
-                            getPlaylistArtUrl(ratingKey, obj.optString("thumb", null))
+                            getPlaylistArtUrl(ratingKey, obj.optString("thumb").ifEmpty { null })
                         )
                     )
                 }
             }
             return PlexPagedList(playlists, totalSize)
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            Log.e(tag, "Error parsing playlists", e)
+            if (forceNetwork) throw IOException("Failed to parse playlists: ${e.message}", e)
+        }
         return PlexPagedList(emptyList(), 0)
     }
 
-    fun getAlbums(artistRatingKey: String): List<PlexAlbum> {
-        return getAlbumsPaged(artistRatingKey, 0, Int.MAX_VALUE).items
-    }
+    fun getAlbums(artistRatingKey: String, forceNetwork: Boolean = false): List<PlexAlbum> =
+        fetchAllPages(forceNetwork) { offset, limit ->
+            getAlbumsPaged(artistRatingKey, offset, limit, forceNetwork)
+        }
 
-    fun getAlbumsPaged(artistRatingKey: String, offset: Int, limit: Int): PlexPagedList<PlexAlbum> {
+    fun getAlbumsPaged(artistRatingKey: String, offset: Int, limit: Int, forceNetwork: Boolean = false): PlexPagedList<PlexAlbum> {
         return getAlbumsPagedByUrl(
             buildUrl(
                 "/library/metadata/$artistRatingKey/children",
@@ -560,7 +650,8 @@ class PlexClient(private val context: Context) {
                     "X-Plex-Container-Start" to offset.toString(),
                     "X-Plex-Container-Size" to limit.toString()
                 )
-            )
+            ),
+            forceNetwork
         )
     }
 

@@ -105,6 +105,24 @@ class PlexoraViewModel : ViewModel() {
     private val _uiState = MutableStateFlow<PlexUiState>(PlexUiState.Loading)
     val uiState: StateFlow<PlexUiState> = _uiState.asStateFlow()
 
+    private lateinit var libraryCache: LibraryQueryCache
+
+    private val _artistsState = MutableStateFlow(CachedResource<List<PlexArtist>>())
+    val artistsState: StateFlow<CachedResource<List<PlexArtist>>> = _artistsState.asStateFlow()
+
+    private val _allAlbumsState = MutableStateFlow(CachedResource<List<PlexAlbum>>())
+    val allAlbumsState: StateFlow<CachedResource<List<PlexAlbum>>> = _allAlbumsState.asStateFlow()
+
+    private val _recentAlbumsState = MutableStateFlow(CachedResource<List<PlexAlbum>>())
+    val recentAlbumsState: StateFlow<CachedResource<List<PlexAlbum>>> = _recentAlbumsState.asStateFlow()
+
+    private val _playlistsState = MutableStateFlow(CachedResource<List<PlexPlaylist>>())
+    val playlistsState: StateFlow<CachedResource<List<PlexPlaylist>>> = _playlistsState.asStateFlow()
+
+    private val artistAlbumsStates = mutableMapOf<String, MutableStateFlow<CachedResource<List<PlexAlbum>>>>()
+    private val albumTracksStates = mutableMapOf<String, MutableStateFlow<CachedResource<LibraryQueryCache.CachedTracks>>>()
+    private val playlistTracksStates = mutableMapOf<String, MutableStateFlow<CachedResource<LibraryQueryCache.CachedTracks>>>()
+
     private val _currentScreen = MutableStateFlow<Screen>(Screen.Setup)
     val currentScreen: StateFlow<Screen> = _currentScreen.asStateFlow()
 
@@ -152,6 +170,7 @@ class PlexoraViewModel : ViewModel() {
 
     fun init(context: Context) {
         plexClient = PlexClient(context)
+        libraryCache = LibraryQueryCache(context.applicationContext)
         if (plexClient.isConfigured()) {
             _currentScreen.value = Screen.Artists
             loadArtists()
@@ -164,6 +183,7 @@ class PlexoraViewModel : ViewModel() {
 
     fun initForAutomotiveSignIn(context: Context) {
         plexClient = PlexClient(context)
+        libraryCache = LibraryQueryCache(context.applicationContext)
         _currentScreen.value = Screen.Setup
         _uiState.value = PlexUiState.ConfigNeeded
         connectController(context.applicationContext)
@@ -172,6 +192,7 @@ class PlexoraViewModel : ViewModel() {
 
     fun initForAutomotiveSettings(context: Context) {
         plexClient = PlexClient(context)
+        libraryCache = LibraryQueryCache(context.applicationContext)
         _currentScreen.value = Screen.Settings
         _uiState.value = if (plexClient.isConfigured()) {
             PlexUiState.ArtistsList(emptyList())
@@ -255,65 +276,207 @@ class PlexoraViewModel : ViewModel() {
 
     fun saveConfig(context: Context, url: String, token: String, sectionId: String) {
         plexClient.saveConfig(url, token, sectionId) // Note: MachineId already saved during server selection
+        plexClient.clearCaches()
+        if (::libraryCache.isInitialized) {
+            libraryCache.clearAll()
+        }
         clearNavigationBackStack()
         _currentScreen.value = Screen.Artists
         loadArtists()
     }
 
     fun loadArtists() {
-        _uiState.value = PlexUiState.Loading
         clearNavigationBackStack()
         _currentScreen.value = Screen.Artists
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val list = plexClient.getArtists()
-                _uiState.value = PlexUiState.ArtistsList(list)
-            } catch (e: Exception) {
-                _uiState.value = PlexUiState.Error("Failed to fetch artists: ${e.message}")
-            }
-        }
+        refreshArtists()
     }
 
     fun loadAllAlbums() {
-        _uiState.value = PlexUiState.Loading
         clearNavigationBackStack()
         _currentScreen.value = Screen.AllAlbums
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val list = plexClient.getAllAlbums()
-                _uiState.value = PlexUiState.AlbumsList(list, "All Albums")
-            } catch (e: Exception) {
-                _uiState.value = PlexUiState.Error("Failed to fetch albums: ${e.message}")
-            }
-        }
+        refreshAllAlbums()
     }
 
     fun loadRecentlyAdded() {
-        _uiState.value = PlexUiState.Loading
         clearNavigationBackStack()
         _currentScreen.value = Screen.RecentlyAdded
+        refreshRecentlyAdded()
+    }
+
+    fun loadPlaylists() {
+        clearNavigationBackStack()
+        _currentScreen.value = Screen.Playlists
+        refreshPlaylists()
+    }
+
+    fun artistAlbumsState(artistRatingKey: String): StateFlow<CachedResource<List<PlexAlbum>>> =
+        artistAlbumsStates.getOrPut(artistRatingKey) { MutableStateFlow(CachedResource()) }
+
+    fun albumTracksState(albumRatingKey: String): StateFlow<CachedResource<LibraryQueryCache.CachedTracks>> =
+        albumTracksStates.getOrPut(albumRatingKey) { MutableStateFlow(CachedResource()) }
+
+    fun playlistTracksState(playlistRatingKey: String): StateFlow<CachedResource<LibraryQueryCache.CachedTracks>> =
+        playlistTracksStates.getOrPut(playlistRatingKey) { MutableStateFlow(CachedResource()) }
+
+    fun loadArtistAlbums(artist: PlexArtist) {
+        val cacheKey = libraryCache.artistAlbumsKey(artist.ratingKey)
+        val stateFlow = artistAlbumsStates.getOrPut(artist.ratingKey) { MutableStateFlow(CachedResource()) }
+        beginRefresh(stateFlow, libraryCache.getAlbums(cacheKey).asStaleCacheData())
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val list = plexClient.getRecentlyAddedAlbums()
-                _uiState.value = PlexUiState.AlbumsList(list, "Recently Added")
+                val list = plexClient.getAlbums(artist.ratingKey, forceNetwork = true)
+                libraryCache.putAlbums(cacheKey, list)
+                withContext(Dispatchers.Main) {
+                    stateFlow.value = CachedResource(data = list, isRefreshing = false)
+                }
             } catch (e: Exception) {
-                _uiState.value = PlexUiState.Error("Failed to fetch recent: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    failRefresh(stateFlow, "Failed to fetch albums: ${e.message}")
+                }
             }
         }
     }
 
-    fun loadPlaylists() {
-        _uiState.value = PlexUiState.Loading
-        clearNavigationBackStack()
-        _currentScreen.value = Screen.Playlists
+    fun loadAlbumTracks(album: PlexAlbum) {
+        val cacheKey = libraryCache.albumTracksKey(album.ratingKey)
+        val stateFlow = albumTracksStates.getOrPut(album.ratingKey) { MutableStateFlow(CachedResource()) }
+        beginRefresh(stateFlow, libraryCache.getTracks(cacheKey).asStaleCacheData())
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val list = plexClient.getPlaylists()
-                _uiState.value = PlexUiState.PlaylistsList(list)
+                val response = plexClient.getTracks(album.ratingKey)
+                val cached = LibraryQueryCache.CachedTracks(response.tracks, response.totalSize)
+                libraryCache.putTracks(cacheKey, response.tracks, response.totalSize)
+                withContext(Dispatchers.Main) {
+                    stateFlow.value = CachedResource(data = cached, isRefreshing = false)
+                }
             } catch (e: Exception) {
-                _uiState.value = PlexUiState.Error("Failed to fetch playlists: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    failRefresh(stateFlow, "Failed to fetch tracks: ${e.message}")
+                }
             }
         }
+    }
+
+    fun loadPlaylistTracks(playlist: PlexPlaylist) {
+        val cacheKey = libraryCache.playlistTracksKey(playlist.ratingKey)
+        val stateFlow = playlistTracksStates.getOrPut(playlist.ratingKey) { MutableStateFlow(CachedResource()) }
+        beginRefresh(stateFlow, libraryCache.getTracks(cacheKey).asStaleCacheData())
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val response = plexClient.getPlaylistTracks(playlist.ratingKey)
+                val cached = LibraryQueryCache.CachedTracks(response.tracks, response.totalSize)
+                libraryCache.putTracks(cacheKey, response.tracks, response.totalSize)
+                withContext(Dispatchers.Main) {
+                    stateFlow.value = CachedResource(data = cached, isRefreshing = false)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    failRefresh(stateFlow, "Failed to fetch playlist tracks: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun refreshArtists() {
+        val cacheKey = libraryCache.artistsKey(plexClient.getLibrarySection())
+        beginRefresh(_artistsState, libraryCache.getArtists(cacheKey).asStaleCacheData())
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val list = plexClient.getArtists(forceNetwork = true)
+                libraryCache.putArtists(cacheKey, list)
+                withContext(Dispatchers.Main) {
+                    _artistsState.value = CachedResource(data = list, isRefreshing = false)
+                    _uiState.value = PlexUiState.ArtistsList(list)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    failRefresh(_artistsState, "Failed to fetch artists: ${e.message}")
+                    if (_artistsState.value.data == null) {
+                        _uiState.value = PlexUiState.Error("Failed to fetch artists: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun refreshAllAlbums() {
+        val cacheKey = libraryCache.allAlbumsKey(plexClient.getLibrarySection())
+        beginRefresh(_allAlbumsState, libraryCache.getAlbums(cacheKey).asStaleCacheData())
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val list = plexClient.getAllAlbums(forceNetwork = true)
+                libraryCache.putAlbums(cacheKey, list)
+                withContext(Dispatchers.Main) {
+                    _allAlbumsState.value = CachedResource(data = list, isRefreshing = false)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    failRefresh(_allAlbumsState, "Failed to fetch albums: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun refreshRecentlyAdded() {
+        val cacheKey = libraryCache.recentlyAddedKey(plexClient.getLibrarySection())
+        beginRefresh(_recentAlbumsState, libraryCache.getAlbums(cacheKey).asStaleCacheData())
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val list = plexClient.getRecentlyAddedAlbums(forceNetwork = true)
+                libraryCache.putAlbums(cacheKey, list)
+                withContext(Dispatchers.Main) {
+                    _recentAlbumsState.value = CachedResource(data = list, isRefreshing = false)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    failRefresh(_recentAlbumsState, "Failed to fetch recent: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun refreshPlaylists() {
+        val cacheKey = libraryCache.playlistsKey()
+        beginRefresh(_playlistsState, libraryCache.getPlaylists(cacheKey).asStaleCacheData())
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val list = plexClient.getPlaylists(forceNetwork = true)
+                libraryCache.putPlaylists(cacheKey, list)
+                withContext(Dispatchers.Main) {
+                    _playlistsState.value = CachedResource(data = list, isRefreshing = false)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    failRefresh(_playlistsState, "Failed to fetch playlists: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun <T> beginRefresh(
+        stateFlow: MutableStateFlow<CachedResource<T>>,
+        cached: T?
+    ) {
+        val staleCached = cached.asStaleCacheData()
+        val current = stateFlow.value
+        val staleCurrent = current.data.asStaleCacheData()
+        stateFlow.value = when {
+            staleCached != null -> CachedResource(data = staleCached, isRefreshing = true)
+            staleCurrent != null -> current.copy(data = staleCurrent, isRefreshing = true, error = null)
+            else -> CachedResource(isRefreshing = true)
+        }
+    }
+
+    private fun <T> failRefresh(
+        stateFlow: MutableStateFlow<CachedResource<T>>,
+        message: String
+    ) {
+        val stale = stateFlow.value.data.asStaleCacheData()
+        stateFlow.value = CachedResource(
+            data = stale,
+            isRefreshing = false,
+            error = if (stale == null) message else null
+        )
     }
 
     fun navigateTo(screen: Screen) {
@@ -359,12 +522,22 @@ class PlexoraViewModel : ViewModel() {
 
             // 2. Revoke token on server and clear local prefs
             plexClient.signOut()
+            if (::libraryCache.isInitialized) {
+                libraryCache.clearAll()
+            }
 
             // 3. Reset UI state
             withContext(Dispatchers.Main) {
                 clearNavigationBackStack()
                 _currentScreen.value = Screen.Setup
                 _uiState.value = PlexUiState.ConfigNeeded
+                _artistsState.value = CachedResource()
+                _allAlbumsState.value = CachedResource()
+                _recentAlbumsState.value = CachedResource()
+                _playlistsState.value = CachedResource()
+                artistAlbumsStates.clear()
+                albumTracksStates.clear()
+                playlistTracksStates.clear()
             }
         }
     }
@@ -428,13 +601,29 @@ class PlexoraViewModel : ViewModel() {
 
     fun clearAppCaches(context: Context) {
         viewModelScope.launch(Dispatchers.IO) {
-            // 1. Clear Metadata Cache
             plexClient.clearCaches()
-
-            // 2. Clear Coil Caches (Image Cache)
+            if (::libraryCache.isInitialized) {
+                libraryCache.clearAll()
+            }
             val imageLoader = coil.Coil.imageLoader(context)
             imageLoader.diskCache?.clear()
             imageLoader.memoryCache?.clear()
+            withContext(Dispatchers.Main) {
+                _artistsState.value = CachedResource()
+                _allAlbumsState.value = CachedResource()
+                _recentAlbumsState.value = CachedResource()
+                _playlistsState.value = CachedResource()
+                artistAlbumsStates.clear()
+                albumTracksStates.clear()
+                playlistTracksStates.clear()
+                when (_currentScreen.value) {
+                    is Screen.Artists -> refreshArtists()
+                    is Screen.AllAlbums -> refreshAllAlbums()
+                    is Screen.RecentlyAdded -> refreshRecentlyAdded()
+                    is Screen.Playlists -> refreshPlaylists()
+                    else -> {}
+                }
+            }
         }
     }
 
@@ -615,6 +804,10 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
     val context = LocalContext.current
     val currentScreen by viewModel.currentScreen.collectAsStateWithLifecycle()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val artistsState by viewModel.artistsState.collectAsStateWithLifecycle()
+    val allAlbumsState by viewModel.allAlbumsState.collectAsStateWithLifecycle()
+    val recentAlbumsState by viewModel.recentAlbumsState.collectAsStateWithLifecycle()
+    val playlistsState by viewModel.playlistsState.collectAsStateWithLifecycle()
     val currentTrack by viewModel.currentTrack.collectAsStateWithLifecycle()
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val shuffleModeEnabled by viewModel.shuffleModeEnabled.collectAsStateWithLifecycle()
@@ -699,6 +892,22 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                         )
                     },
                     actions = {
+                        val tabRefreshing = when (currentScreen) {
+                            is Screen.Artists -> artistsState.isRefreshing
+                            is Screen.AllAlbums -> allAlbumsState.isRefreshing
+                            is Screen.RecentlyAdded -> recentAlbumsState.isRefreshing
+                            is Screen.Playlists -> playlistsState.isRefreshing
+                            else -> false
+                        }
+                        if (tabRefreshing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier
+                                    .padding(end = 8.dp)
+                                    .size(22.dp),
+                                color = Color(0xFFFFE5A93B),
+                                strokeWidth = 2.dp
+                            )
+                        }
                         if (currentScreen != Screen.Settings) {
                             IconButton(onClick = {
                                 when (val screen = currentScreen) {
@@ -735,43 +944,61 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                             modifier = Modifier.fillMaxSize()
                         )
                         is Screen.Artists -> {
-                            when (val state = uiState) {
-                                is PlexUiState.Loading -> CircularLoading()
-                                is PlexUiState.ArtistsList -> ArtistsGrid(state.artists, state = artistsGridState) { artist ->
+                            when {
+                                artistsState.error != null && artistsState.data.asStaleCacheData() == null ->
+                                    ErrorView(artistsState.error!!) { viewModel.loadArtists() }
+                                artistsState.showTabLoading() -> CircularLoading()
+                                artistsState.data != null -> ArtistsGrid(
+                                    artistsState.data!!,
+                                    state = artistsGridState
+                                ) { artist ->
                                     viewModel.navigateTo(Screen.ArtistAlbums(artist))
                                 }
-                                is PlexUiState.Error -> ErrorView(state.message) { viewModel.loadArtists() }
-                                else -> {}
+                                else -> CircularLoading()
                             }
                         }
                         is Screen.AllAlbums -> {
-                            when (val state = uiState) {
-                                is PlexUiState.Loading -> CircularLoading()
-                                is PlexUiState.AlbumsList -> AlbumsGrid(state.albums, state.title, state = allAlbumsGridState) { album ->
+                            when {
+                                allAlbumsState.error != null && allAlbumsState.data.asStaleCacheData() == null ->
+                                    ErrorView(allAlbumsState.error!!) { viewModel.loadAllAlbums() }
+                                allAlbumsState.showTabLoading() -> CircularLoading()
+                                allAlbumsState.data != null -> AlbumsGrid(
+                                    allAlbumsState.data!!,
+                                    "All Albums",
+                                    state = allAlbumsGridState
+                                ) { album ->
                                     viewModel.navigateTo(Screen.AlbumTracks(album))
                                 }
-                                is PlexUiState.Error -> ErrorView(state.message) { viewModel.loadAllAlbums() }
-                                else -> {}
+                                else -> CircularLoading()
                             }
                         }
                         is Screen.RecentlyAdded -> {
-                            when (val state = uiState) {
-                                is PlexUiState.Loading -> CircularLoading()
-                                is PlexUiState.AlbumsList -> AlbumsGrid(state.albums, state.title, state = recentlyAddedGridState) { album ->
+                            when {
+                                recentAlbumsState.error != null && recentAlbumsState.data.asStaleCacheData() == null ->
+                                    ErrorView(recentAlbumsState.error!!) { viewModel.loadRecentlyAdded() }
+                                recentAlbumsState.showTabLoading() -> CircularLoading()
+                                recentAlbumsState.data != null -> AlbumsGrid(
+                                    recentAlbumsState.data!!,
+                                    "Recently Added",
+                                    state = recentlyAddedGridState
+                                ) { album ->
                                     viewModel.navigateTo(Screen.AlbumTracks(album))
                                 }
-                                is PlexUiState.Error -> ErrorView(state.message) { viewModel.loadRecentlyAdded() }
-                                else -> {}
+                                else -> CircularLoading()
                             }
                         }
                         is Screen.Playlists -> {
-                            when (val state = uiState) {
-                                is PlexUiState.Loading -> CircularLoading()
-                                is PlexUiState.PlaylistsList -> PlaylistsGrid(state.playlists, state = playlistsGridState) { playlist ->
+                            when {
+                                playlistsState.error != null && playlistsState.data.asStaleCacheData() == null ->
+                                    ErrorView(playlistsState.error!!) { viewModel.loadPlaylists() }
+                                playlistsState.showTabLoading() -> CircularLoading()
+                                playlistsState.data != null -> PlaylistsGrid(
+                                    playlistsState.data!!,
+                                    state = playlistsGridState
+                                ) { playlist ->
                                     viewModel.navigateTo(Screen.PlaylistTracks(playlist))
                                 }
-                                is PlexUiState.Error -> ErrorView(state.message) { viewModel.loadPlaylists() }
-                                else -> {}
+                                else -> CircularLoading()
                             }
                         }
                         is Screen.ArtistAlbums -> {
@@ -1343,20 +1570,10 @@ fun PlaylistsGrid(playlists: List<PlexPlaylist>, state: LazyGridState = remember
 
 @Composable
 fun AlbumsScreen(artist: PlexArtist, viewModel: PlexoraViewModel, state: LazyGridState = rememberLazyGridState()) {
-    val context = LocalContext.current
-    var albums by remember { mutableStateOf<List<PlexAlbum>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
+    val albumsResource by viewModel.artistAlbumsState(artist.ratingKey).collectAsStateWithLifecycle()
 
     LaunchedEffect(artist.ratingKey) {
-        isLoading = true
-        withContext(Dispatchers.IO) {
-            val client = PlexClient(context)
-            val list = client.getAlbums(artist.ratingKey)
-            withContext(Dispatchers.Main) {
-                albums = list
-                isLoading = false
-            }
-        }
+        viewModel.loadArtistAlbums(artist)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1369,15 +1586,30 @@ fun AlbumsScreen(artist: PlexArtist, viewModel: PlexoraViewModel, state: LazyGri
             IconButton(onClick = { viewModel.navigateBack() }) {
                 Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
-            Text(artist.title, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Text(
+                artist.title,
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            if (albumsResource.isRefreshing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    color = Color(0xFFFFE5A93B),
+                    strokeWidth = 2.dp
+                )
+            }
         }
 
-        if (isLoading) {
-            CircularLoading()
-        } else {
-            AlbumsGrid(albums = albums, state = state) { album ->
+        when {
+            albumsResource.error != null && albumsResource.data.asStaleCacheData() == null ->
+                ErrorView(albumsResource.error!!) { viewModel.loadArtistAlbums(artist) }
+            albumsResource.showTabLoading() -> CircularLoading()
+            albumsResource.data != null -> AlbumsGrid(albums = albumsResource.data!!, state = state) { album ->
                 viewModel.navigateTo(Screen.AlbumTracks(album))
             }
+            else -> CircularLoading()
         }
     }
 }
@@ -1385,10 +1617,21 @@ fun AlbumsScreen(artist: PlexArtist, viewModel: PlexoraViewModel, state: LazyGri
 @Composable
 fun PlaylistTracksScreen(playlist: PlexPlaylist, viewModel: PlexoraViewModel, state: LazyListState = rememberLazyListState()) {
     val context = LocalContext.current
-    var tracks by remember { mutableStateOf<List<PlexTrack>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
-    var totalTracks by remember { mutableStateOf(0) }
+    val tracksResource by viewModel.playlistTracksState(playlist.ratingKey).collectAsStateWithLifecycle()
+    var tracks by remember(playlist.ratingKey) { mutableStateOf<List<PlexTrack>>(emptyList()) }
+    var totalTracks by remember(playlist.ratingKey) { mutableStateOf(0) }
     var isFetchingMore by remember { mutableStateOf(false) }
+
+    LaunchedEffect(playlist.ratingKey) {
+        viewModel.loadPlaylistTracks(playlist)
+    }
+
+    LaunchedEffect(tracksResource.data) {
+        tracksResource.data?.let { cached ->
+            tracks = cached.tracks
+            totalTracks = cached.totalSize
+        }
+    }
 
     fun loadMore() {
         if (isFetchingMore || tracks.size >= totalTracks) return
@@ -1402,20 +1645,6 @@ fun PlaylistTracksScreen(playlist: PlexPlaylist, viewModel: PlexoraViewModel, st
         }
     }
 
-    LaunchedEffect(playlist.ratingKey) {
-        isLoading = true
-        withContext(Dispatchers.IO) {
-            val client = PlexClient(context)
-            val response = client.getPlaylistTracks(playlist.ratingKey)
-            withContext(Dispatchers.Main) {
-                tracks = response.tracks
-                totalTracks = response.totalSize
-                isLoading = false
-            }
-        }
-    }
-
-    // Monitor scroll for infinite scroll
     val firstVisibleItemPlaylist by remember { derivedStateOf { state.firstVisibleItemIndex } }
     LaunchedEffect(firstVisibleItemPlaylist) {
         if (tracks.isNotEmpty() && firstVisibleItemPlaylist > tracks.size - 20) {
@@ -1426,7 +1655,8 @@ fun PlaylistTracksScreen(playlist: PlexPlaylist, viewModel: PlexoraViewModel, st
     TracksListContent(
         title = playlist.title,
         tracks = tracks,
-        isLoading = isLoading,
+        isLoading = tracksResource.showTabLoading(),
+        isRefreshing = tracksResource.isRefreshing,
         state = state,
         showOrdinalNumber = true,
         onBack = { viewModel.navigateBack() },
@@ -1444,7 +1674,8 @@ fun TracksListContent(
     onBack: () -> Unit,
     onTrackClick: (List<PlexTrack>, Int) -> Unit,
     state: LazyListState = rememberLazyListState(),
-    showOrdinalNumber: Boolean = false
+    showOrdinalNumber: Boolean = false,
+    isRefreshing: Boolean = false
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -1456,7 +1687,20 @@ fun TracksListContent(
             IconButton(onClick = onBack) {
                 Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
-            Text(title, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Text(
+                title,
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            if (isRefreshing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    color = Color(0xFFFFE5A93B),
+                    strokeWidth = 2.dp
+                )
+            }
         }
 
         if (isLoading) {
@@ -1508,10 +1752,21 @@ fun TracksListContent(
 @Composable
 fun TracksScreen(album: PlexAlbum, viewModel: PlexoraViewModel, state: LazyListState = rememberLazyListState()) {
     val context = LocalContext.current
-    var tracks by remember { mutableStateOf<List<PlexTrack>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
-    var totalTracks by remember { mutableStateOf(0) }
+    val tracksResource by viewModel.albumTracksState(album.ratingKey).collectAsStateWithLifecycle()
+    var tracks by remember(album.ratingKey) { mutableStateOf<List<PlexTrack>>(emptyList()) }
+    var totalTracks by remember(album.ratingKey) { mutableStateOf(0) }
     var isFetchingMore by remember { mutableStateOf(false) }
+
+    LaunchedEffect(album.ratingKey) {
+        viewModel.loadAlbumTracks(album)
+    }
+
+    LaunchedEffect(tracksResource.data) {
+        tracksResource.data?.let { cached ->
+            tracks = cached.tracks
+            totalTracks = cached.totalSize
+        }
+    }
 
     fun loadMore() {
         if (isFetchingMore || tracks.size >= totalTracks) return
@@ -1525,20 +1780,6 @@ fun TracksScreen(album: PlexAlbum, viewModel: PlexoraViewModel, state: LazyListS
         }
     }
 
-    LaunchedEffect(album.ratingKey) {
-        isLoading = true
-        withContext(Dispatchers.IO) {
-            val client = PlexClient(context)
-            val response = client.getTracks(album.ratingKey)
-            withContext(Dispatchers.Main) {
-                tracks = response.tracks
-                totalTracks = response.totalSize
-                isLoading = false
-            }
-        }
-    }
-
-    // Monitor scroll for infinite scroll
     val firstVisibleItemTracks by remember { derivedStateOf { state.firstVisibleItemIndex } }
     LaunchedEffect(firstVisibleItemTracks) {
         if (tracks.isNotEmpty() && firstVisibleItemTracks > tracks.size - 20) {
@@ -1549,7 +1790,8 @@ fun TracksScreen(album: PlexAlbum, viewModel: PlexoraViewModel, state: LazyListS
     TracksListContent(
         title = album.title,
         tracks = tracks,
-        isLoading = isLoading,
+        isLoading = tracksResource.showTabLoading(),
+        isRefreshing = tracksResource.isRefreshing,
         state = state,
         showOrdinalNumber = false,
         onBack = { viewModel.navigateBack() },
