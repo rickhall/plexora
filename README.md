@@ -59,7 +59,7 @@ Version codes: mobile uses `appVersionCode`; automotive adds `1_000_000`.
 
 ### Google Play target API levels
 
-Phone and tablet builds (**mobile**) must target **API 36+** for Play updates. **automotive** stays on **API 35**, which matches Android Automotive OS requirements. Both flavors share `compileSdk = 36` in Gradle; only `targetSdk` differs by flavor.
+Phone and tablet builds (**mobile**) must target **API 36+** for Play updates. **automotive** stays on **API 35**, which matches Android Automotive OS requirements. Both flavors share `compileSdk = 37` in Gradle; only `targetSdk` differs by flavor.
 
 ### Signed release (Android Studio)
 
