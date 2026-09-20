@@ -338,23 +338,23 @@ class PlexoraViewModel : ViewModel() {
 
     fun stopPlayback() {
         _mediaController.value?.let { controller ->
-            controller.stop()
-            controller.clearMediaItems()
+            val bundle = android.os.Bundle()
+            controller.sendCustomCommand(
+                androidx.media3.session.SessionCommand("CLEAR_PLAYBACK_STATE", bundle),
+                bundle
+            )
         }
         _currentTrack.value = null
         _playbackQueue.value = emptyList()
         _currentQueueIndex.value = 0
+        _isPlaying.value = false
     }
 
     fun logout(context: Context) {
         viewModelScope.launch(Dispatchers.IO) {
             // 1. Tell the player to stop immediately
             withContext(Dispatchers.Main) {
-                _mediaController.value?.let { controller ->
-                    controller.stop()
-                    controller.clearMediaItems()
-                }
-                _currentTrack.value = null
+                stopPlayback()
             }
 
             // 2. Revoke token on server and clear local prefs

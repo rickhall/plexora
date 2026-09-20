@@ -116,10 +116,24 @@ class PlexMediaLibraryService : MediaLibraryService() {
         restorePlaybackState()
     }
 
+    private fun clearPersistedPlaybackState() {
+        currentPlayQueueId = null
+        getSharedPreferences("playback_prefs", android.content.Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
+        player.stop()
+        player.clearMediaItems()
+    }
+
     private fun savePlaybackState() {
-        val currentItem = player.currentMediaItem ?: return
         val prefs = getSharedPreferences("playback_prefs", android.content.Context.MODE_PRIVATE)
-        
+        if (player.currentMediaItem == null || player.mediaItemCount == 0) {
+            prefs.edit().clear().apply()
+            return
+        }
+        val currentItem = player.currentMediaItem ?: return
+
         // Store current track, position, and queue metadata
         val queueIds = mutableListOf<String>()
         for (i in 0 until player.mediaItemCount) {
@@ -505,6 +519,7 @@ class PlexMediaLibraryService : MediaLibraryService() {
             val connectionResult = super.onConnect(session, controller)
             val availableSessionCommands = connectionResult.availableSessionCommands.buildUpon()
             availableSessionCommands.add(SessionCommand("SET_PLAY_QUEUE_ID", android.os.Bundle.EMPTY))
+            availableSessionCommands.add(SessionCommand("CLEAR_PLAYBACK_STATE", android.os.Bundle.EMPTY))
             val availablePlayerCommands = connectionResult.availablePlayerCommands.buildUpon()
                 .add(Player.COMMAND_SET_SHUFFLE_MODE)
                 .build()
@@ -523,6 +538,14 @@ class PlexMediaLibraryService : MediaLibraryService() {
         ): ListenableFuture<SessionResult> {
             if (customCommand.customAction == "SET_PLAY_QUEUE_ID") {
                 currentPlayQueueId = args.getString("play_queue_id")
+                return com.google.common.util.concurrent.Futures.immediateFuture(
+                    SessionResult(SessionResult.RESULT_SUCCESS)
+                )
+            }
+            if (customCommand.customAction == "CLEAR_PLAYBACK_STATE") {
+                Handler(Looper.getMainLooper()).post {
+                    clearPersistedPlaybackState()
+                }
                 return com.google.common.util.concurrent.Futures.immediateFuture(
                     SessionResult(SessionResult.RESULT_SUCCESS)
                 )
