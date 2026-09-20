@@ -2,6 +2,7 @@ package org.ungoverned.plexora
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -46,6 +47,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -826,6 +829,8 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
     val playlistTracksListState = rememberLazyListState()
 
     var showFullPlayer by remember { mutableStateOf(false) }
+    val isLandscape =
+        LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     BackHandler(enabled = showFullPlayer || viewModel.canNavigateBack()) {
         if (showFullPlayer) {
@@ -839,41 +844,43 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
         Row(modifier = Modifier.fillMaxSize()) {
             // Left Navigation Rail
             if (currentScreen != Screen.Setup) {
-                NavigationRail(
-                    containerColor = Color(0xFF1E1E24),
-                    contentColor = Color.White,
-                    modifier = Modifier.fillMaxHeight()
+                Column(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(80.dp)
+                        .background(Color(0xFF1E1E24)),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Spacer(Modifier.weight(1f))
-                    NavigationRailItem(
+                    PlexNavigationRailItem(
                         selected = currentScreen is Screen.Artists,
                         onClick = { viewModel.loadArtists() },
-                        icon = { Icon(Icons.Default.Person, contentDescription = null) },
-                        label = { Text("Artists") }
+                        icon = Icons.Default.Person,
+                        label = "Artists"
                     )
-                    NavigationRailItem(
+                    PlexNavigationRailItem(
                         selected = currentScreen is Screen.AllAlbums,
                         onClick = { viewModel.loadAllAlbums() },
-                        icon = { Icon(Icons.Default.Album, contentDescription = null) },
-                        label = { Text("Albums") }
+                        icon = Icons.Default.Album,
+                        label = "Albums"
                     )
-                    NavigationRailItem(
+                    PlexNavigationRailItem(
                         selected = currentScreen is Screen.RecentlyAdded,
                         onClick = { viewModel.loadRecentlyAdded() },
-                        icon = { Icon(Icons.Default.NewReleases, contentDescription = null) },
-                        label = { Text("Recent") }
+                        icon = Icons.Default.NewReleases,
+                        label = "Recent"
                     )
-                    NavigationRailItem(
+                    PlexNavigationRailItem(
                         selected = currentScreen is Screen.Playlists,
                         onClick = { viewModel.loadPlaylists() },
-                        icon = { Icon(Icons.Default.List, contentDescription = null) },
-                        label = { Text("Playlists") }
+                        icon = Icons.Default.List,
+                        label = "Playlists"
                     )
-                    NavigationRailItem(
+                    PlexNavigationRailItem(
                         selected = currentScreen is Screen.Settings,
                         onClick = { viewModel.navigateTo(Screen.Settings) },
-                        icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                        label = { Text("Settings") }
+                        icon = Icons.Default.Settings,
+                        label = "Settings"
                     )
                     Spacer(Modifier.weight(1f))
                 }
@@ -882,48 +889,35 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
             Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
                 // Main Top Bar (hidden during Plex linking so setup uses the full content area)
                 if (currentScreen != Screen.Setup) {
-                TopAppBar(
-                    title = {
-                        BrowseTopAppBarTitle(currentScreen = currentScreen)
-                    },
-                    actions = {
-                        val tabRefreshing = when (currentScreen) {
-                            is Screen.Artists -> artistsState.isRefreshing
-                            is Screen.AllAlbums -> allAlbumsState.isRefreshing
-                            is Screen.RecentlyAdded -> recentAlbumsState.isRefreshing
-                            is Screen.Playlists -> playlistsState.isRefreshing
-                            else -> false
-                        }
-                        if (tabRefreshing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier
-                                    .padding(end = 8.dp)
-                                    .size(22.dp),
-                                color = Color(0xFFFFE5A93B),
-                                strokeWidth = 2.dp
-                            )
-                        }
-                        if (currentScreen != Screen.Settings) {
-                            IconButton(onClick = {
-                                when (val screen = currentScreen) {
-                                    is Screen.ArtistAlbums -> viewModel.shuffleAndPlayArtist(screen.artist)
-                                    is Screen.AlbumTracks -> viewModel.shuffleAlbum(screen.album)
-                                    is Screen.PlaylistTracks -> viewModel.shufflePlaylist(screen.playlist)
-                                    else -> viewModel.shuffleLibrary()
-                                }
-                            }) {
-                                Icon(
-                                    imageVector = Icons.Default.Shuffle,
-                                    contentDescription = "Shuffle",
-                                    tint = Color.White
+                    if (isLandscape) {
+                        CompactBrowseTopBar(
+                            currentScreen = currentScreen,
+                            artistsState = artistsState,
+                            allAlbumsState = allAlbumsState,
+                            recentAlbumsState = recentAlbumsState,
+                            playlistsState = playlistsState,
+                            viewModel = viewModel
+                        )
+                    } else {
+                        TopAppBar(
+                            title = {
+                                BrowseTopAppBarTitle(currentScreen = currentScreen)
+                            },
+                            actions = {
+                                BrowseTopBarActions(
+                                    currentScreen = currentScreen,
+                                    artistsState = artistsState,
+                                    allAlbumsState = allAlbumsState,
+                                    recentAlbumsState = recentAlbumsState,
+                                    playlistsState = playlistsState,
+                                    viewModel = viewModel
                                 )
-                            }
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color(0xFF121214)
-                    )
-                )
+                            },
+                            colors = TopAppBarDefaults.topAppBarColors(
+                                containerColor = Color(0xFF121214)
+                            )
+                        )
+                    }
                 }
 
                 // Screen Selector
@@ -1384,9 +1378,142 @@ fun SetupScreen(
     }
 }
 
+private val browseTopBarColor = Color(0xFF121214)
+private val navRailHighlightColor = Color(0xFF2E2E38)
+private val browseTileShape = RectangleShape
+
+@Composable
+private fun PlexNavigationRailItem(
+    selected: Boolean,
+    onClick: () -> Unit,
+    icon: ImageVector,
+    label: String
+) {
+    val contentColor = if (selected) Color.White else Color(0xFF9E9EA8)
+    Box(
+        modifier = Modifier
+            .padding(vertical = 2.dp)
+            .width(72.dp)
+            .then(
+                if (selected) {
+                    Modifier.background(navRailHighlightColor, RectangleShape)
+                } else {
+                    Modifier
+                }
+            )
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp, horizontal = 4.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = contentColor
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = label,
+                color = contentColor,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun CompactBrowseTopBar(
+    currentScreen: Screen,
+    artistsState: CachedResource<List<PlexArtist>>,
+    allAlbumsState: CachedResource<List<PlexAlbum>>,
+    recentAlbumsState: CachedResource<List<PlexAlbum>>,
+    playlistsState: CachedResource<List<PlexPlaylist>>,
+    viewModel: PlexoraViewModel
+) {
+    Surface(
+        color = browseTopBarColor,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 16.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(modifier = Modifier.weight(1f)) {
+                BrowseTopAppBarTitle(currentScreen = currentScreen)
+            }
+            BrowseTopBarActions(
+                currentScreen = currentScreen,
+                artistsState = artistsState,
+                allAlbumsState = allAlbumsState,
+                recentAlbumsState = recentAlbumsState,
+                playlistsState = playlistsState,
+                viewModel = viewModel,
+                compact = true
+            )
+        }
+    }
+}
+
+@Composable
+private fun BrowseTopBarActions(
+    currentScreen: Screen,
+    artistsState: CachedResource<List<PlexArtist>>,
+    allAlbumsState: CachedResource<List<PlexAlbum>>,
+    recentAlbumsState: CachedResource<List<PlexAlbum>>,
+    playlistsState: CachedResource<List<PlexPlaylist>>,
+    viewModel: PlexoraViewModel,
+    compact: Boolean = false
+) {
+    val tabRefreshing = when (currentScreen) {
+        is Screen.Artists -> artistsState.isRefreshing
+        is Screen.AllAlbums -> allAlbumsState.isRefreshing
+        is Screen.RecentlyAdded -> recentAlbumsState.isRefreshing
+        is Screen.Playlists -> playlistsState.isRefreshing
+        else -> false
+    }
+    if (tabRefreshing) {
+        CircularProgressIndicator(
+            modifier = Modifier
+                .padding(end = if (compact) 4.dp else 8.dp)
+                .size(if (compact) 18.dp else 22.dp),
+            color = Color(0xFFFFE5A93B),
+            strokeWidth = 2.dp
+        )
+    }
+    if (currentScreen != Screen.Settings) {
+        IconButton(
+            onClick = {
+                when (val screen = currentScreen) {
+                    is Screen.ArtistAlbums -> viewModel.shuffleAndPlayArtist(screen.artist)
+                    is Screen.AlbumTracks -> viewModel.shuffleAlbum(screen.album)
+                    is Screen.PlaylistTracks -> viewModel.shufflePlaylist(screen.playlist)
+                    else -> viewModel.shuffleLibrary()
+                }
+            },
+            modifier = if (compact) Modifier.size(36.dp) else Modifier
+        ) {
+            Icon(
+                imageVector = Icons.Default.Shuffle,
+                contentDescription = "Shuffle",
+                tint = Color.White,
+                modifier = if (compact) Modifier.size(22.dp) else Modifier
+            )
+        }
+    }
+}
+
 @Composable
 private fun BrowseTopAppBarTitle(currentScreen: Screen) {
     val gold = Color(0xFFFFE5A93B)
+    val isLandscape =
+        LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val sectionTitle = when (currentScreen) {
         is Screen.Artists -> "Artists"
         is Screen.AllAlbums -> "Albums"
@@ -1396,22 +1523,46 @@ private fun BrowseTopAppBarTitle(currentScreen: Screen) {
         else -> null
     }
     if (sectionTitle != null) {
-        Column {
-            Text(
-                text = "PLEXORA",
-                color = gold,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 2.sp,
-                lineHeight = 12.sp
-            )
-            Text(
-                text = sectionTitle,
-                color = Color.White,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                lineHeight = 24.sp
-            )
+        if (isLandscape) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "PLEXORA",
+                    color = gold,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 2.sp,
+                    maxLines = 1
+                )
+                Text(
+                    text = sectionTitle,
+                    color = Color.White,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        } else {
+            Column {
+                Text(
+                    text = "PLEXORA",
+                    color = gold,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 2.sp,
+                    lineHeight = 12.sp
+                )
+                Text(
+                    text = sectionTitle,
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    lineHeight = 24.sp
+                )
+            }
         }
     } else {
         Text(
@@ -1455,7 +1606,7 @@ fun ArtistsGrid(artists: List<PlexArtist>, state: LazyGridState = rememberLazyGr
                 modifier = Modifier
                     .padding(4.dp)
                     .clickable { onClick(artist) },
-                shape = RoundedCornerShape(12.dp),
+                shape = browseTileShape,
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1465,7 +1616,7 @@ fun ArtistsGrid(artists: List<PlexArtist>, state: LazyGridState = rememberLazyGr
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(1f)
-                            .clip(RoundedCornerShape(12.dp)),
+                            .clip(browseTileShape),
                         contentScale = ContentScale.Crop
                     )
                     Text(
@@ -1516,7 +1667,7 @@ fun AlbumsGrid(
                         modifier = Modifier
                             .padding(4.dp)
                             .clickable { onClick(album) },
-                        shape = RoundedCornerShape(12.dp),
+                        shape = browseTileShape,
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1526,7 +1677,7 @@ fun AlbumsGrid(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .aspectRatio(1f)
-                                    .clip(RoundedCornerShape(12.dp)),
+                                    .clip(browseTileShape),
                                 contentScale = ContentScale.Crop
                             )
                             Text(
@@ -1574,7 +1725,7 @@ fun PlaylistsGrid(playlists: List<PlexPlaylist>, state: LazyGridState = remember
                 modifier = Modifier
                     .padding(4.dp)
                     .clickable { onClick(playlist) },
-                shape = RoundedCornerShape(12.dp),
+                shape = browseTileShape,
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1583,7 +1734,7 @@ fun PlaylistsGrid(playlists: List<PlexPlaylist>, state: LazyGridState = remember
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(1f)
-                            .clip(RoundedCornerShape(12.dp))
+                            .clip(browseTileShape)
                     )
                     Text(
                         text = playlist.title,
