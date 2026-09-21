@@ -14,7 +14,6 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -39,12 +38,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
@@ -52,9 +48,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.pm.PackageInfoCompat
@@ -720,7 +719,11 @@ class PlexoraViewModel : ViewModel() {
         playQueueId: String?
     ) {
         if (tracks.isEmpty()) return
-        val controller = _mediaController.value ?: return
+        val controller = _mediaController.value
+        if (controller == null) {
+            Log.w(tag, "startPlayback: MediaController not connected yet")
+            return
+        }
         val safeStart = startIndex.coerceIn(0, tracks.lastIndex)
 
         controller.shuffleModeEnabled = shuffle
@@ -733,9 +736,15 @@ class PlexoraViewModel : ViewModel() {
         val listToPlay = if (shuffle && playQueueId == null) tracks.shuffled() else tracks
 
         val mediaItems = listToPlay.map { track ->
+            val streamUri = Uri.parse(track.streamUrl)
             MediaItem.Builder()
                 .setMediaId("track_${track.ratingKey}")
-                .setUri(Uri.parse(track.streamUrl))
+                .setUri(streamUri)
+                .setRequestMetadata(
+                    MediaItem.RequestMetadata.Builder()
+                        .setMediaUri(streamUri)
+                        .build()
+                )
                 .setMediaMetadata(
                     MediaMetadata.Builder()
                         .setTitle(track.title)
@@ -832,12 +841,8 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
     val isLandscape =
         LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
-    BackHandler(enabled = showFullPlayer || viewModel.canNavigateBack()) {
-        if (showFullPlayer) {
-            showFullPlayer = false
-        } else {
-            viewModel.navigateBack()
-        }
+    BackHandler(enabled = !showFullPlayer && viewModel.canNavigateBack()) {
+        viewModel.navigateBack()
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -1024,9 +1029,6 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
 
         if (showFullPlayer && currentTrack != null) {
             FullPlayerScreen(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .zIndex(10f),
                 mediaItem = currentTrack!!,
                 isPlaying = isPlaying,
                 shuffleModeEnabled = shuffleModeEnabled,
@@ -2001,7 +2003,7 @@ fun MiniPlayer(
                 onClick = onClick,
                 onLongClick = onClear
             ),
-        shape = RoundedCornerShape(12.dp),
+        shape = browseTileShape,
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
     ) {
         Row(
@@ -2015,7 +2017,7 @@ fun MiniPlayer(
                 contentDescription = "Artwork",
                 modifier = Modifier
                     .size(48.dp)
-                    .clip(RoundedCornerShape(8.dp)),
+                    .clip(browseTileShape),
                 contentScale = ContentScale.Crop
             )
             Spacer(modifier = Modifier.width(12.dp))
@@ -2078,6 +2080,8 @@ fun FullPlayerScreen(
 ) {
     val configuration = LocalConfiguration.current
     val isPortraitLayout = configuration.screenHeightDp > configuration.screenWidthDp
+    val playerSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
     var showQueue by remember { mutableStateOf(false) }
     val queueSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -2085,137 +2089,148 @@ fun FullPlayerScreen(
         showQueue = false
     }
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color(0xFF121214))
-            .clickable(
-                indication = null,
-                interactionSource = remember { MutableInteractionSource() },
-                onClick = {}
-            )
+    val hidePlayerSheet: () -> Unit = {
+        scope.launch { playerSheetState.hide() }
+    }
+
+    val hideQueueSheet: () -> Unit = {
+        scope.launch { queueSheetState.hide() }
+    }
+
+    val sheetContentHeight = fullScreenBottomSheetHeight()
+
+    ModalBottomSheet(
+        onDismissRequest = onClose,
+        sheetState = playerSheetState,
+        modifier = modifier,
+        containerColor = Color(0xFF121214),
+        dragHandle = null,
+        contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
     ) {
-        AsyncImage(
-            model = mediaItem.mediaMetadata.artworkUri?.toString(),
-            contentDescription = null,
+        Box(
             modifier = Modifier
-                .fillMaxSize()
-                .blur(40.dp)
-                .alpha(0.2f),
-            contentScale = ContentScale.Crop
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .fillMaxWidth()
+                .height(sheetContentHeight)
+                .background(Color(0xFF121214))
         ) {
-            FullPlayerDismissHandle(onClose = onClose)
+            AsyncImage(
+                model = mediaItem.mediaMetadata.artworkUri?.toString(),
+                contentDescription = null,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .blur(40.dp)
+                    .alpha(0.2f),
+                contentScale = ContentScale.Crop
+            )
 
-            if (isPortraitLayout) {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(20.dp)
-                ) {
-                    FullPlayerArtwork(
-                        mediaItem = mediaItem,
-                        modifier = Modifier
-                            .fillMaxWidth(0.88f)
-                            .aspectRatio(1f)
-                    )
-                    FullPlayerDetailsAndControls(
-                        mediaItem = mediaItem,
-                        isPlaying = isPlaying,
-                        shuffleModeEnabled = shuffleModeEnabled,
-                        progress = progress,
-                        duration = duration,
-                        onPlayPause = onPlayPause,
-                        onNext = onNext,
-                        onPrevious = onPrevious,
-                        onToggleShuffle = onToggleShuffle,
-                        onSeek = onSeek,
-                        onShowQueue = { showQueue = true },
-                        showQueueButton = queueItems.isNotEmpty(),
-                        titleFontSize = 24.sp,
-                        artistFontSize = 18.sp
-                    )
-                }
-            } else {
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(bottom = 12.dp)
-                        .fullPlayerSwipeDownToDismiss(onClose),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(24.dp)
-                ) {
-                    FullPlayerArtwork(
-                        mediaItem = mediaItem,
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                ModalSheetDragHandle(onDismiss = hidePlayerSheet)
+
+                if (isPortraitLayout) {
+                    Column(
                         modifier = Modifier
                             .weight(1f)
-                            .fillMaxHeight()
-                            .aspectRatio(1f, matchHeightConstraintsFirst = true)
-                    )
-                    FullPlayerDetailsAndControls(
-                        mediaItem = mediaItem,
-                        isPlaying = isPlaying,
-                        shuffleModeEnabled = shuffleModeEnabled,
-                        progress = progress,
-                        duration = duration,
-                        onPlayPause = onPlayPause,
-                        onNext = onNext,
-                        onPrevious = onPrevious,
-                        onToggleShuffle = onToggleShuffle,
-                        onSeek = onSeek,
-                        onShowQueue = { showQueue = true },
-                        showQueueButton = queueItems.isNotEmpty(),
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                    )
-                }
-            }
-        }
-
-        if (showQueue) {
-            ModalBottomSheet(
-                onDismissRequest = { showQueue = false },
-                sheetState = queueSheetState,
-                containerColor = Color(0xFF1E1E24),
-                dragHandle = {
-                    Box(
-                        modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center
+                            .verticalScroll(rememberScrollState()),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(20.dp)
                     ) {
-                        Box(
+                        FullPlayerArtwork(
+                            mediaItem = mediaItem,
                             modifier = Modifier
-                                .width(40.dp)
-                                .height(4.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(Color.White.copy(alpha = 0.35f))
+                                .fillMaxWidth(0.88f)
+                                .aspectRatio(1f)
+                        )
+                        FullPlayerDetailsAndControls(
+                            mediaItem = mediaItem,
+                            isPlaying = isPlaying,
+                            shuffleModeEnabled = shuffleModeEnabled,
+                            progress = progress,
+                            duration = duration,
+                            onPlayPause = onPlayPause,
+                            onNext = onNext,
+                            onPrevious = onPrevious,
+                            onToggleShuffle = onToggleShuffle,
+                            onSeek = onSeek,
+                            onShowQueue = { showQueue = true },
+                            showQueueButton = queueItems.isNotEmpty(),
+                            titleFontSize = 24.sp,
+                            artistFontSize = 18.sp
+                        )
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(24.dp)
+                    ) {
+                        FullPlayerArtwork(
+                            mediaItem = mediaItem,
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .aspectRatio(1f, matchHeightConstraintsFirst = true)
+                        )
+                        FullPlayerDetailsAndControls(
+                            mediaItem = mediaItem,
+                            isPlaying = isPlaying,
+                            shuffleModeEnabled = shuffleModeEnabled,
+                            progress = progress,
+                            duration = duration,
+                            onPlayPause = onPlayPause,
+                            onNext = onNext,
+                            onPrevious = onPrevious,
+                            onToggleShuffle = onToggleShuffle,
+                            onSeek = onSeek,
+                            onShowQueue = { showQueue = true },
+                            showQueueButton = queueItems.isNotEmpty(),
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
                         )
                     }
                 }
+            }
+        }
+    }
+
+    if (showQueue) {
+        ModalBottomSheet(
+            onDismissRequest = { showQueue = false },
+            sheetState = queueSheetState,
+            containerColor = Color(0xFF1E1E24),
+            dragHandle = null,
+            contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(sheetContentHeight)
+                    .background(Color(0xFF1E1E24))
             ) {
-                PlaybackQueueSheet(
-                    queueItems = queueItems,
-                    currentIndex = currentQueueIndex,
-                    onItemSelected = { index ->
-                        onQueueItemSelected(index)
-                        showQueue = false
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 24.dp)
-                )
+                Column(modifier = Modifier.fillMaxSize()) {
+                    ModalSheetDragHandle(onDismiss = hideQueueSheet)
+                    PlaybackQueueSheet(
+                        queueItems = queueItems,
+                        currentIndex = currentQueueIndex,
+                        onItemSelected = { index ->
+                            onQueueItemSelected(index)
+                            showQueue = false
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(bottom = 24.dp)
+                    )
+                }
             }
         }
     }
@@ -2235,7 +2250,7 @@ private fun PlaybackQueueSheet(
         }
     }
 
-    Column(modifier = modifier) {
+    Column(modifier = modifier.fillMaxSize()) {
         Text(
             text = "Up next",
             color = Color.White,
@@ -2253,6 +2268,7 @@ private fun PlaybackQueueSheet(
         if (queueItems.isEmpty()) {
             Box(
                 modifier = Modifier
+                    .weight(1f)
                     .fillMaxWidth()
                     .padding(32.dp),
                 contentAlignment = Alignment.Center
@@ -2260,7 +2276,10 @@ private fun PlaybackQueueSheet(
                 Text("Nothing queued.", color = Color.Gray)
             }
         } else {
-            LazyColumn(state = listState) {
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                state = listState
+            ) {
                 itemsIndexed(queueItems) { index, item ->
                     val isCurrent = index == currentIndex
                     Row(
@@ -2309,34 +2328,28 @@ private fun PlaybackQueueSheet(
     }
 }
 
-private fun Modifier.fullPlayerSwipeDownToDismiss(onClose: () -> Unit): Modifier = composed {
-    var downwardDrag by remember { mutableFloatStateOf(0f) }
-    pointerInput(onClose) {
-        detectVerticalDragGestures(
-            onDragEnd = {
-                if (downwardDrag > 96f) {
-                    onClose()
-                }
-                downwardDrag = 0f
-            },
-            onVerticalDrag = { _, dragAmount ->
-                if (dragAmount > 0f) {
-                    downwardDrag += dragAmount
-                }
-            }
-        )
+@Composable
+private fun fullScreenBottomSheetHeight(): Dp {
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    return with(density) {
+        val windowHeightPx = LocalWindowInfo.current.containerSize.height
+        if (windowHeightPx > 0) {
+            windowHeightPx.toDp()
+        } else {
+            configuration.screenHeightDp.dp
+        }
     }
 }
 
 @Composable
-private fun FullPlayerDismissHandle(onClose: () -> Unit) {
+private fun ModalSheetDragHandle(onDismiss: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .statusBarsPadding()
-            .fullPlayerSwipeDownToDismiss(onClose)
             .clickable(
-                onClick = onClose,
+                onClick = onDismiss,
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() }
             )
@@ -2357,13 +2370,15 @@ private fun FullPlayerDismissHandle(onClose: () -> Unit) {
 private fun FullPlayerArtwork(mediaItem: MediaItem, modifier: Modifier = Modifier) {
     Card(
         modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
+        shape = browseTileShape,
         elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
     ) {
         AsyncImage(
             model = mediaItem.mediaMetadata.artworkUri?.toString(),
             contentDescription = "Artwork",
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(browseTileShape),
             contentScale = ContentScale.Crop
         )
     }

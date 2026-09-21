@@ -141,9 +141,15 @@ object AutomotiveBrowseItems {
     }
 
     fun trackItem(context: Context, track: PlexTrack): MediaItem {
+        val streamUri = Uri.parse(track.streamUrl)
         return MediaItem.Builder()
             .setMediaId("track_${track.ratingKey}")
-            .setUri(Uri.parse(track.streamUrl))
+            .setUri(streamUri)
+            .setRequestMetadata(
+                MediaItem.RequestMetadata.Builder()
+                    .setMediaUri(streamUri)
+                    .build()
+            )
             .setMediaMetadata(
                 MediaMetadata.Builder()
                     .setTitle(track.title)

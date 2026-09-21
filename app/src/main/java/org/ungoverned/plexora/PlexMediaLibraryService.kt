@@ -45,8 +45,14 @@ class PlexMediaLibraryService : MediaLibraryService() {
     private val libraryStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
-                PlexIntents.ACTION_LIBRARY_CONFIGURED -> refreshLibraryBrowsers()
-                PlexIntents.ACTION_LIBRARY_CLEARED -> refreshLibraryBrowsers()
+                PlexIntents.ACTION_LIBRARY_CONFIGURED -> {
+                    Handler(Looper.getMainLooper()).post { clearPersistedPlaybackState() }
+                    refreshLibraryBrowsers()
+                }
+                PlexIntents.ACTION_LIBRARY_CLEARED -> {
+                    Handler(Looper.getMainLooper()).post { clearPersistedPlaybackState() }
+                    refreshLibraryBrowsers()
+                }
             }
         }
     }
@@ -316,6 +322,13 @@ class PlexMediaLibraryService : MediaLibraryService() {
         return MediaSession.MediaItemsWithStartPosition(mediaItems, startIndex, 0L)
     }
 
+    private fun MediaItem.hasResolvableStreamUri(): Boolean {
+        val localUri = localConfiguration?.uri
+        if (localUri != null && localUri != Uri.EMPTY) return true
+        val requestUri = requestMetadata.mediaUri
+        return requestUri != null && requestUri != Uri.EMPTY
+    }
+
     private fun resolveExplicitMediaItems(
         mediaItems: List<MediaItem>,
         startIndex: Int,
@@ -324,7 +337,7 @@ class PlexMediaLibraryService : MediaLibraryService() {
         val resolved = mutableListOf<MediaItem>()
         for (item in mediaItems) {
             when {
-                item.localConfiguration?.uri != null -> resolved.add(item)
+                item.hasResolvableStreamUri() -> resolved.add(item)
                 item.mediaId.startsWith("track_") -> {
                     plexClient.getTrack(item.mediaId.removePrefix("track_"))?.let {
                         resolved.add(createMediaItem(it))
@@ -512,20 +525,25 @@ class PlexMediaLibraryService : MediaLibraryService() {
         }
 
         @OptIn(UnstableApi::class)
-        override fun onConnect(
+        override fun onConnectAsync(
             session: MediaSession,
             controller: MediaSession.ControllerInfo
-        ): MediaSession.ConnectionResult {
-            val connectionResult = super.onConnect(session, controller)
-            val availableSessionCommands = connectionResult.availableSessionCommands.buildUpon()
-            availableSessionCommands.add(SessionCommand("SET_PLAY_QUEUE_ID", android.os.Bundle.EMPTY))
-            availableSessionCommands.add(SessionCommand("CLEAR_PLAYBACK_STATE", android.os.Bundle.EMPTY))
-            val availablePlayerCommands = connectionResult.availablePlayerCommands.buildUpon()
+        ): ListenableFuture<MediaSession.ConnectionResult> {
+            // Do not override deprecated onConnect(): in Media3 1.11 its super implementation
+            // exposes empty player commands, which blocks setMediaItems/play from the mobile UI.
+            val sessionCommands =
+                MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
+                    .add(SessionCommand("SET_PLAY_QUEUE_ID", android.os.Bundle.EMPTY))
+                    .add(SessionCommand("CLEAR_PLAYBACK_STATE", android.os.Bundle.EMPTY))
+                    .build()
+            val playerCommands = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
                 .add(Player.COMMAND_SET_SHUFFLE_MODE)
                 .build()
-            return MediaSession.ConnectionResult.accept(
-                availableSessionCommands.build(),
-                availablePlayerCommands
+            return com.google.common.util.concurrent.Futures.immediateFuture(
+                MediaSession.ConnectionResult.AcceptedResultBuilder(session, controller)
+                    .setAvailableSessionCommands(sessionCommands)
+                    .setAvailablePlayerCommands(playerCommands)
+                    .build()
             )
         }
 

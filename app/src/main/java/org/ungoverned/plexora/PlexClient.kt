@@ -6,6 +6,7 @@ import android.util.Log
 import okhttp3.CacheControl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -134,6 +135,7 @@ class PlexClient(private val context: Context) {
             editor.putString("machine_id", machineId)
         }
         editor.apply()
+        clearPlaybackState()
         context.sendBroadcast(
             android.content.Intent(PlexIntents.ACTION_LIBRARY_CONFIGURED)
                 .setPackage(context.packageName)
@@ -717,7 +719,7 @@ class PlexClient(private val context: Context) {
 
         val request = Request.Builder()
             .url(url)
-            .post(okhttp3.RequestBody.create(null, ByteArray(0)))
+            .post(ByteArray(0).toRequestBody(null))
             .addHeader("Accept", "application/json")
             .addHeader("X-Plex-Client-Identifier", getClientId())
             .addHeader("X-Plex-Device", android.os.Build.MODEL)
