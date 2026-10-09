@@ -442,7 +442,7 @@ class PlexMediaLibraryService : MediaLibraryService() {
             val extras = Bundle().apply {
                 putString(
                     MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_LABEL_COMPAT,
-                    "Sign in to Plex"
+                    "Set up Plexora"
                 )
                 putParcelable(
                     MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_INTENT_COMPAT,

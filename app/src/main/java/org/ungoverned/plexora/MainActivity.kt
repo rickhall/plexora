@@ -173,6 +173,7 @@ class PlexoraViewModel : ViewModel() {
     fun init(context: Context) {
         plexClient = PlexClient(context)
         libraryCache = LibraryQueryCache(context.applicationContext)
+        plexClient.clearIncompleteSetup()
         if (plexClient.isConfigured()) {
             _currentScreen.value = Screen.Artists
             loadArtists()
@@ -276,8 +277,14 @@ class PlexoraViewModel : ViewModel() {
         _currentQueueIndex.value = controller.currentMediaItemIndex.coerceAtLeast(0)
     }
 
-    fun saveConfig(context: Context, url: String, token: String, sectionId: String) {
-        plexClient.saveConfig(url, token, sectionId) // Note: MachineId already saved during server selection
+    fun saveConfig(
+        context: Context,
+        url: String,
+        token: String,
+        sectionId: String,
+        machineId: String = ""
+    ) {
+        plexClient.saveConfig(url, token, sectionId, machineId)
         plexClient.clearCaches()
         if (::libraryCache.isInitialized) {
             libraryCache.clearAll()
@@ -1091,6 +1098,7 @@ fun SetupScreen(
     var sectionId by remember { mutableStateOf("") }
     var sectionsList by remember { mutableStateOf<List<PlexSection>>(emptyList()) }
     var serversList by remember { mutableStateOf<List<PlexServer>>(emptyList()) }
+    var selectedMachineId by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     // PIN Auth State
@@ -1271,19 +1279,21 @@ fun SetupScreen(
                                         }
                                         return@launch
                                     }
-                                    tempClient.saveConfig(bestUri, token, "", machineId = server.id)
-                                    val list = tempClient.getMusicSections()
+                                    val list = tempClient.getMusicSectionsForServer(bestUri, token)
                                     withContext(Dispatchers.Main) {
                                         isConnectingToServer = false
                                         connectingServerName = null
-                                        url = bestUri
                                         if (list.isNotEmpty()) {
+                                            url = bestUri
+                                            selectedMachineId = server.id
                                             sectionsList = list
                                             sectionId = list.first().id
+                                            errorMessage = null
                                         } else {
                                             errorMessage =
-                                                "Could not find Music libraries on ${server.name}."
-                                            tempClient.clearConfig()
+                                                "No music library on ${server.name}. Plexora needs a Plex " +
+                                                    "Music library on this server—add one in Plex, then try another " +
+                                                    "server or link again."
                                         }
                                     }
                                 }
@@ -1359,14 +1369,20 @@ fun SetupScreen(
                 Spacer(modifier = Modifier.height(16.dp))
                 Button(
                     onClick = {
-                        viewModel.saveConfig(context, url, token, sectionId)
+                        if (sectionId.isBlank()) {
+                            errorMessage = "Select a music library to continue."
+                            return@Button
+                        }
+                        viewModel.saveConfig(context, url, token, sectionId, selectedMachineId)
                     },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = sectionId.isNotBlank()
                 ) {
                     Text("Connect and Import")
                 }
                 TextButton(onClick = {
                     sectionsList = emptyList()
+                    selectedMachineId = ""
                     errorMessage = null
                 }) {
                     Text("Back", color = Color(0xFFFFE5A93B))

@@ -146,6 +146,13 @@ class PlexClient(private val context: Context) {
         return getServerUrl().isNotEmpty() && getPlexToken().isNotEmpty() && getLibrarySection().isNotEmpty()
     }
 
+    /** Drops server credentials saved before a music library was chosen (legacy / interrupted setup). */
+    fun clearIncompleteSetup() {
+        if (getServerUrl().isNotEmpty() && getPlexToken().isNotEmpty() && getLibrarySection().isEmpty()) {
+            clearConfig()
+        }
+    }
+
     fun clearConfig() {
         prefs.edit()
             .remove("server_url")
@@ -397,7 +404,25 @@ class PlexClient(private val context: Context) {
     }
 
     fun getMusicSections(): List<PlexSection> {
-        val jsonStr = executeGetRequest(buildUrl("/library/sections")) ?: return emptyList()
+        val serverUrl = getServerUrl()
+        val token = getPlexToken()
+        if (serverUrl.isEmpty() || token.isEmpty()) return emptyList()
+        return getMusicSectionsForServer(serverUrl, token)
+    }
+
+    /** Probe a server during setup without writing preferences. */
+    fun getMusicSectionsForServer(serverUrl: String, token: String): List<PlexSection> {
+        val cleanUrl = if (serverUrl.endsWith("/")) serverUrl.substring(0, serverUrl.length - 1) else serverUrl
+        val url = Uri.parse(cleanUrl).buildUpon()
+            .encodedPath("/library/sections")
+            .appendQueryParameter("X-Plex-Token", token)
+            .build()
+            .toString()
+        val jsonStr = executeGetRequest(url) ?: return emptyList()
+        return parseMusicSectionsJson(jsonStr)
+    }
+
+    private fun parseMusicSectionsJson(jsonStr: String): List<PlexSection> {
         val sections = mutableListOf<PlexSection>()
         try {
             val root = JSONObject(jsonStr)
@@ -409,7 +434,9 @@ class PlexClient(private val context: Context) {
                     sections.add(PlexSection(obj.getString("key"), obj.getString("title")))
                 }
             }
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            Log.e(tag, "Error parsing music sections", e)
+        }
         return sections
     }
 

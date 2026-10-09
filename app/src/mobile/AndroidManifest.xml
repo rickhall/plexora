@@ -17,6 +17,12 @@
                 <category android:name="android.intent.category.APP_MUSIC" />
             </intent-filter>
         </activity>
+
+        <!-- Android Auto / DHU: resolution action from MediaLibraryService (same flow as phone setup). -->
+        <activity
+            android:name=".SignInActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Plexora" />
     </application>
 
 </manifest>
