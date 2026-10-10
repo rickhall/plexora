@@ -66,7 +66,7 @@ Phone and tablet builds (**mobile**) must target **API 36+** for Play updates. *
 1. Sync Gradle after any version bump (`appVersionCode` in `app/build.gradle.kts`).
 2. Select the **mobileRelease** or **automotiveRelease** build variant.
 3. **Build → Generate Signed App Bundle / APK** → **Android App Bundle**, sign with your Play upload keystore.
-4. Upload the `.aab` to the matching Play Console app / track (phone vs automotive are separate listings if you use both).
+4. Upload the `.aab` to Play Console (same app listing; use **Form factors** / dedicated **Android Automotive OS** track for `automotiveRelease` when configured).
 
 Unsigned CI-style bundles (debug-signed) land under:
 
@@ -75,27 +75,32 @@ Unsigned CI-style bundles (debug-signed) land under:
 
 Release builds use R8 minify and resource shrinking; run `./gradlew bundleMobileRelease bundleAutomotiveRelease` locally to catch ProGuard issues before signing in Studio.
 
-## Play Store (automotive)
+## Play Console (review access)
 
-Plexora requires a linked Plex account with a music library. Reviewers and new users see a **Sign in to Plex** prompt in the vehicle media browser until setup is complete.
+Plexora requires a linked Plex account and a **Music** library on the chosen Plex server. Until setup completes, the media browser shows a sign-in error with **Set up Plexora** (mobile/Android Auto opens `SignInActivity`; AAOS uses the same PIN setup flow from the vehicle media browser).
 
-Add the following under **Play Console → App content → App access** (and in **Android Auto** / store testing notes):
+### App content (sign-in instructions)
 
-> Plexora is a Plex **music** client. Review and testing require a Plex account with at least one **Music** library on an online Plex Media Server (movies-only or empty servers will not work).
->
-> **Phone (launcher app):**
-> 1. Open Plexora → **Link with Plex.tv** → complete PIN at https://plex.tv/link
-> 2. Choose a Plex server → **Select Music Section** → **Connect and Import**
-> 3. Browse Artists / Albums / Playlists and play a track
->
-> **Android Auto (projected):**
-> 1. Complete phone setup above first (music library must be selected).
-> 2. Connect the phone to Android Auto / DHU, open Plexora in the media app list.
-> 3. Browse and play from Artists or Playlists; use Shuffle items where shown.
->
-> If setup fails with “No music library”, add a Music library in Plex Media Server or choose a different server.
+Path: **Monitor and improve** → **Policy and programs** → **App content**.
 
-Playback from an album or playlist queues remaining tracks in order (or shuffled via the Shuffle items). Large libraries are loaded in pages so artists and albums beyond the first screen remain browsable.
+- **App access**: **All or some functionality is restricted** (Plex login + music library).
+- **Sign-in details**: **Manage** → **+ Add new instructions** (Play limits each instruction set to **500 characters**; add **two** sets—one for phone/Android Auto, one for Android Automotive OS). Plex uses **PIN linking** at https://plex.tv/link (no shared test password). **Save**, then **Publishing overview** → **Send for review** when only policy text changed.
+
+Also useful: **Test and release** → **Advanced settings** → **Form factors** → **Android Automotive OS** (screenshots, dedicated track); **Testing notes** on the release that ships `app-automotive-release.aab`.
+
+Help: [Prepare your app for review (sign-in details)](https://support.google.com/googleplay/android-developer/answer/9859455).
+
+**Reference flow (not limited to 500 chars):**
+
+| Audience | Setup entry |
+|----------|-------------|
+| **Phone** | Launcher app → **Link with Plex.tv** → PIN → server → **Select Music Section** → **Connect and Import** |
+| **Android Auto** | Complete phone setup first, then Plexora in the AA media app list |
+| **Android Automotive OS** | Vehicle media browser → **Set up Plexora** → same PIN / server / music section steps on the head unit |
+
+Movies-only or empty servers fail at music library selection—reviewers need a server with a Plex **Music** library.
+
+Playback from an album or playlist queues remaining tracks in order (or shuffled via Shuffle items). Large libraries are loaded in pages so artists and albums beyond the first screen remain browsable.
 
 ## Release notes (version 10)
 
@@ -120,7 +125,7 @@ Copy into Play Console for **mobileRelease** (version code **10**) and **automot
 
 - **UI (mobile)**: Jetpack Compose
 - **Media**: Media3 / ExoPlayer
-- **Network**: OkHttp 4 & Plex API
+- **Network**: OkHttp 5 & Plex API
 - **Images**: Coil 2 (mobile), `ArtworkProvider` ContentProvider (automotive)
 - **Persistence**: SharedPreferences for session and playback state recovery
 
