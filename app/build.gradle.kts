@@ -1,6 +1,7 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("org.jetbrains.kotlin.plugin.compose")
 }
@@ -17,8 +18,8 @@ android {
     defaultConfig {
         applicationId = "org.ungoverned.plexora"
         minSdk = 26
-        // Automotive stays on 35 (AAOS Play requirement). Mobile overrides to 36 below.
-        targetSdk = 35
+        // Default matches mobile (default flavor). Automotive flavor overrides to 35 for AAOS.
+        targetSdk = 36
         versionCode = appVersionCode
         versionName = appVersionName
 
@@ -57,9 +58,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures {
         compose = true
     }
@@ -67,6 +65,12 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 
