@@ -1039,6 +1039,8 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                     MiniPlayer(
                         mediaItem = currentTrack!!,
                         isPlaying = isPlaying,
+                        progress = progress,
+                        duration = duration,
                         onPlayPause = {
                             if (isPlaying) controller?.pause() else controller?.play()
                         },
@@ -2211,6 +2213,8 @@ fun TracksScreen(album: PlexAlbum, viewModel: PlexoraViewModel, state: LazyListS
 fun MiniPlayer(
     mediaItem: MediaItem,
     isPlaying: Boolean,
+    progress: Long,
+    duration: Long,
     onPlayPause: () -> Unit,
     onClear: () -> Unit,
     onClick: () -> Unit
@@ -2226,12 +2230,14 @@ fun MiniPlayer(
         shape = browseTileShape,
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
     ) {
-        Row(
-            modifier = Modifier
-                .padding(12.dp)
-                .fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            MiniPlayerProgressBar(progress = progress, duration = duration)
+            Row(
+                modifier = Modifier
+                    .padding(12.dp)
+                    .fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             AsyncImage(
                 model = mediaItem.mediaMetadata.artworkUri?.toString(),
                 contentDescription = "Artwork",
@@ -2275,6 +2281,33 @@ fun MiniPlayer(
                     modifier = Modifier.size(32.dp)
                 )
             }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MiniPlayerProgressBar(progress: Long, duration: Long) {
+    val trackColor = Color(0xFF2A2A30)
+    val progressColor = Color(0xFFFFE5A93B)
+    val fraction = if (duration > 0L) {
+        (progress.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(3.dp)
+            .background(trackColor)
+    ) {
+        if (fraction > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(fraction)
+                    .background(progressColor)
+            )
         }
     }
 }
