@@ -50,9 +50,13 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -86,6 +90,18 @@ import kotlinx.coroutines.withContext
 enum class BrowseMode {
     Artists,
     Albums
+}
+
+/** Minimum tile width for library grids; smaller values fit more columns. */
+enum class BrowseGridTileSize(val minDp: Int, val label: String, val shortLabel: String) {
+    Compact(96, "Small", "S"),
+    Default(112, "Medium", "M"),
+    Large(160, "Large", "L");
+
+    companion object {
+        fun fromMinDp(dp: Int): BrowseGridTileSize =
+            entries.minByOrNull { kotlin.math.abs(it.minDp - dp) } ?: Default
+    }
 }
 
 // Navigation Screens
@@ -136,6 +152,9 @@ class PlexoraViewModel : ViewModel() {
     private val _browseMode = MutableStateFlow(BrowseMode.Artists)
     val browseMode: StateFlow<BrowseMode> = _browseMode.asStateFlow()
 
+    private val _browseGridTileSize = MutableStateFlow(BrowseGridTileSize.Default)
+    val browseGridTileSize: StateFlow<BrowseGridTileSize> = _browseGridTileSize.asStateFlow()
+
     private val navigationBackStack = ArrayDeque<Screen>()
 
     private val _mediaController = MutableStateFlow<MediaController?>(null)
@@ -181,6 +200,7 @@ class PlexoraViewModel : ViewModel() {
     fun init(context: Context) {
         plexClient = PlexClient(context)
         libraryCache = LibraryQueryCache(context.applicationContext)
+        _browseGridTileSize.value = loadBrowseGridTileSize(context)
         plexClient.clearIncompleteSetup()
         if (plexClient.isConfigured()) {
             loadBrowse(BrowseMode.Artists)
@@ -318,6 +338,26 @@ class PlexoraViewModel : ViewModel() {
             BrowseMode.Artists -> refreshArtists()
             BrowseMode.Albums -> refreshAllAlbums()
         }
+    }
+
+    fun setBrowseGridTileSize(context: Context, size: BrowseGridTileSize) {
+        if (_browseGridTileSize.value == size) return
+        _browseGridTileSize.value = size
+        context.applicationContext
+            .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putInt(UI_PREF_BROWSE_GRID_TILE_MIN_DP, size.minDp)
+            .apply()
+    }
+
+    private fun loadBrowseGridTileSize(context: Context): BrowseGridTileSize {
+        val prefs = context.applicationContext.getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
+        if (!prefs.contains(UI_PREF_BROWSE_GRID_TILE_MIN_DP)) {
+            return BrowseGridTileSize.Default
+        }
+        return BrowseGridTileSize.fromMinDp(
+            prefs.getInt(UI_PREF_BROWSE_GRID_TILE_MIN_DP, BrowseGridTileSize.Default.minDp)
+        )
     }
 
     fun setBrowseMode(mode: BrowseMode) {
@@ -852,6 +892,7 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
     val context = LocalContext.current
     val currentScreen by viewModel.currentScreen.collectAsStateWithLifecycle()
     val browseMode by viewModel.browseMode.collectAsStateWithLifecycle()
+    val browseGridTileSize by viewModel.browseGridTileSize.collectAsStateWithLifecycle()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val artistsState by viewModel.artistsState.collectAsStateWithLifecycle()
     val allAlbumsState by viewModel.allAlbumsState.collectAsStateWithLifecycle()
@@ -882,47 +923,9 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
         viewModel.navigateBack()
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Row(modifier = Modifier.fillMaxSize()) {
-            // Left Navigation Rail
-            if (currentScreen != Screen.Setup) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .width(80.dp)
-                        .background(Color(0xFF1E1E24)),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Spacer(Modifier.weight(1f))
-                    PlexNavigationRailItem(
-                        selected = viewModel.isBrowseSectionActive(),
-                        onClick = { viewModel.loadBrowse() },
-                        icon = Icons.Default.Explore,
-                        label = "Browse"
-                    )
-                    PlexNavigationRailItem(
-                        selected = currentScreen is Screen.RecentlyAdded,
-                        onClick = { viewModel.loadRecentlyAdded() },
-                        icon = Icons.Default.NewReleases,
-                        label = "Recent"
-                    )
-                    PlexNavigationRailItem(
-                        selected = currentScreen is Screen.Playlists,
-                        onClick = { viewModel.loadPlaylists() },
-                        icon = Icons.Default.List,
-                        label = "Playlists"
-                    )
-                    PlexNavigationRailItem(
-                        selected = currentScreen is Screen.Settings,
-                        onClick = { viewModel.navigateTo(Screen.Settings) },
-                        icon = Icons.Default.Settings,
-                        label = "Settings"
-                    )
-                    Spacer(Modifier.weight(1f))
-                }
-            }
-
-            Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+    @Composable
+    fun MainColumn(columnModifier: Modifier) {
+        Column(modifier = columnModifier) {
                 // Main Top Bar (hidden during Plex linking so setup uses the full content area)
                 if (currentScreen != Screen.Setup) {
                     if (isLandscape) {
@@ -975,6 +978,10 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                             BrowseScreen(
                                 browseMode = browseMode,
                                 onBrowseModeChange = viewModel::setBrowseMode,
+                                gridTileSize = browseGridTileSize,
+                                onGridTileSizeChange = { size ->
+                                    viewModel.setBrowseGridTileSize(context, size)
+                                },
                                 artistsState = artistsState,
                                 allAlbumsState = allAlbumsState,
                                 artistsGridState = artistsGridState,
@@ -997,6 +1004,7 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                                 recentAlbumsState.showTabLoading() -> CircularLoading()
                                 recentAlbumsState.data != null -> AlbumsGrid(
                                     recentAlbumsState.data!!,
+                                    gridTileMinDp = browseGridTileSize.minDp,
                                     state = recentlyAddedGridState
                                 ) { album ->
                                     viewModel.navigateTo(Screen.AlbumTracks(album))
@@ -1011,6 +1019,7 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                                 playlistsState.showTabLoading() -> CircularLoading()
                                 playlistsState.data != null -> PlaylistsGrid(
                                     playlistsState.data!!,
+                                    gridTileMinDp = browseGridTileSize.minDp,
                                     state = playlistsGridState
                                 ) { playlist ->
                                     viewModel.navigateTo(Screen.PlaylistTracks(playlist))
@@ -1049,6 +1058,37 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                             else controller?.pause()
                         },
                         onClick = { showFullPlayer = true }
+                    )
+                }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (isLandscape) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                if (currentScreen != Screen.Setup) {
+                    PlexNavigationRail(
+                        currentScreen = currentScreen,
+                        viewModel = viewModel
+                    )
+                }
+                MainColumn(
+                    columnModifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                )
+            }
+        } else {
+            Column(modifier = Modifier.fillMaxSize()) {
+                MainColumn(
+                    columnModifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                )
+                if (currentScreen != Screen.Setup) {
+                    PlexBottomNavigationBar(
+                        currentScreen = currentScreen,
+                        viewModel = viewModel
                     )
                 }
             }
@@ -1422,6 +1462,94 @@ private val navRailHighlightColor = Color(0xFF2E2E38)
 private val browseTileShape = RectangleShape
 
 @Composable
+private fun PlexNavigationRail(
+    currentScreen: Screen,
+    viewModel: PlexoraViewModel,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxHeight()
+            .width(80.dp)
+            .background(Color(0xFF1E1E24)),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Spacer(Modifier.weight(1f))
+        PlexNavigationRailItem(
+            selected = viewModel.isBrowseSectionActive(),
+            onClick = { viewModel.loadBrowse() },
+            icon = Icons.Default.Explore,
+            label = "Browse"
+        )
+        PlexNavigationRailItem(
+            selected = currentScreen is Screen.RecentlyAdded,
+            onClick = { viewModel.loadRecentlyAdded() },
+            icon = Icons.Default.NewReleases,
+            label = "Recent"
+        )
+        PlexNavigationRailItem(
+            selected = currentScreen is Screen.Playlists,
+            onClick = { viewModel.loadPlaylists() },
+            icon = Icons.Default.List,
+            label = "Playlists"
+        )
+        PlexNavigationRailItem(
+            selected = currentScreen is Screen.Settings,
+            onClick = { viewModel.navigateTo(Screen.Settings) },
+            icon = Icons.Default.Settings,
+            label = "Settings"
+        )
+        Spacer(Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun PlexBottomNavigationBar(
+    currentScreen: Screen,
+    viewModel: PlexoraViewModel,
+) {
+    val itemColors = NavigationBarItemDefaults.colors(
+        selectedIconColor = Color.White,
+        selectedTextColor = Color.White,
+        unselectedIconColor = Color(0xFF9E9EA8),
+        unselectedTextColor = Color(0xFF9E9EA8),
+        indicatorColor = navRailHighlightColor,
+    )
+    NavigationBar(
+        containerColor = Color(0xFF1E1E24),
+        contentColor = Color.White,
+    ) {
+        NavigationBarItem(
+            selected = viewModel.isBrowseSectionActive(),
+            onClick = { viewModel.loadBrowse() },
+            icon = { Icon(Icons.Default.Explore, contentDescription = "Browse") },
+            label = { Text("Browse") },
+            colors = itemColors,
+        )
+        NavigationBarItem(
+            selected = currentScreen is Screen.RecentlyAdded,
+            onClick = { viewModel.loadRecentlyAdded() },
+            icon = { Icon(Icons.Default.NewReleases, contentDescription = "Recent") },
+            label = { Text("Recent") },
+            colors = itemColors,
+        )
+        NavigationBarItem(
+            selected = currentScreen is Screen.Playlists,
+            onClick = { viewModel.loadPlaylists() },
+            icon = { Icon(Icons.Default.List, contentDescription = "Playlists") },
+            label = { Text("Playlists") },
+            colors = itemColors,
+        )
+        NavigationBarItem(
+            selected = currentScreen is Screen.Settings,
+            onClick = { viewModel.navigateTo(Screen.Settings) },
+            icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
+            label = { Text("Settings") },
+            colors = itemColors,
+        )
+    }
+}
+
+@Composable
 private fun PlexNavigationRailItem(
     selected: Boolean,
     onClick: () -> Unit,
@@ -1504,6 +1632,29 @@ private fun CompactBrowseTopBar(
 }
 
 @Composable
+private fun TabRefreshIndicatorSlot(
+    visible: Boolean,
+    compact: Boolean,
+) {
+    val indicatorSize = if (compact) 18.dp else 22.dp
+    val trailingPadding = if (compact) 4.dp else 8.dp
+    Box(
+        modifier = Modifier
+            .padding(end = trailingPadding)
+            .size(indicatorSize),
+        contentAlignment = Alignment.Center
+    ) {
+        if (visible) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(indicatorSize),
+                color = Color(0xFFFFE5A93B),
+                strokeWidth = 2.dp
+            )
+        }
+    }
+}
+
+@Composable
 private fun BrowseTopBarActions(
     currentScreen: Screen,
     browseMode: BrowseMode,
@@ -1526,15 +1677,7 @@ private fun BrowseTopBarActions(
         is Screen.Playlists -> playlistsState.isRefreshing
         else -> false
     }
-    if (tabRefreshing) {
-        CircularProgressIndicator(
-            modifier = Modifier
-                .padding(end = if (compact) 4.dp else 8.dp)
-                .size(if (compact) 18.dp else 22.dp),
-            color = Color(0xFFFFE5A93B),
-            strokeWidth = 2.dp
-        )
-    }
+    TabRefreshIndicatorSlot(visible = tabRefreshing, compact = compact)
     if (currentScreen != Screen.Settings) {
         IconButton(
             onClick = {
@@ -1686,12 +1829,20 @@ private fun BrowseModeToggleSegment(
     horizontalPadding: Dp,
     height: Dp,
     cornerShape: RoundedCornerShape,
+    minSegmentWidth: Dp = 0.dp,
 ) {
     val bg = if (selected) gold.copy(alpha = 0.28f) else Color.Transparent
     val textColor = if (selected) gold else Color(0xFFB0B0B8)
+    val segmentModifier = if (minSegmentWidth > 0.dp) {
+        Modifier
+            .height(height)
+            .defaultMinSize(minWidth = minSegmentWidth, minHeight = height)
+    } else {
+        Modifier.height(height)
+    }
     Surface(
         onClick = onClick,
-        modifier = Modifier.height(height),
+        modifier = segmentModifier,
         shape = cornerShape,
         color = bg,
         contentColor = textColor,
@@ -1710,10 +1861,130 @@ private fun BrowseModeToggleSegment(
     }
 }
 
+private fun estimateBrowseGridToggleWidthPx(
+    textMeasurer: androidx.compose.ui.text.TextMeasurer,
+    shortLabels: Boolean,
+    compact: Boolean,
+    density: Density,
+): Int {
+    val fontSize = if (compact) 12.sp else 13.sp
+    val horizontalPaddingPx = with(density) { (if (compact) 10.dp else 12.dp).roundToPx() }
+    val labelStyle = TextStyle(fontSize = fontSize, fontWeight = FontWeight.SemiBold)
+    return BrowseGridTileSize.entries.sumOf { size ->
+        val label = if (shortLabels) size.shortLabel else size.label
+        val textWidth = textMeasurer.measure(
+            text = label,
+            style = labelStyle,
+            constraints = Constraints(maxWidth = Int.MAX_VALUE),
+        ).size.width
+        val segmentWidth = textWidth + horizontalPaddingPx * 2
+        if (shortLabels) {
+            maxOf(segmentWidth, with(density) { 36.dp.roundToPx() })
+        } else {
+            segmentWidth
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BrowseGridSizeToggle(
+    tileSize: BrowseGridTileSize,
+    onTileSizeChange: (BrowseGridTileSize) -> Unit,
+    compact: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val textMeasurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    BoxWithConstraints(modifier) {
+        val fullLabelsWidthPx = remember(textMeasurer, compact, density) {
+            estimateBrowseGridToggleWidthPx(textMeasurer, shortLabels = false, compact, density)
+        }
+        val useShortLabels = with(density) { maxWidth < fullLabelsWidthPx.toDp() }
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            BrowseGridSizeToggleTrack(
+                tileSize = tileSize,
+                onTileSizeChange = onTileSizeChange,
+                compact = compact,
+                shortLabels = useShortLabels,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BrowseGridSizeToggleTrack(
+    tileSize: BrowseGridTileSize,
+    onTileSizeChange: (BrowseGridTileSize) -> Unit,
+    compact: Boolean,
+    shortLabels: Boolean,
+) {
+    val gold = Color(0xFFFFE5A93B)
+    val trackColor = Color(0xFF2A2A30)
+    val height = if (compact) 26.dp else 32.dp
+    val fontSize = if (compact) 12.sp else 13.sp
+    val horizontalPadding = if (shortLabels) 0.dp else if (compact) 10.dp else 12.dp
+    val minSegmentWidth = if (shortLabels) 36.dp else 0.dp
+    val pillShape = RoundedCornerShape(height / 2)
+    val trackModifier = Modifier
+        .wrapContentWidth()
+        .height(height)
+        .clip(pillShape)
+        .background(trackColor)
+    val trackContent: @Composable () -> Unit = {
+        Row(
+            modifier = trackModifier,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BrowseGridTileSize.entries.forEachIndexed { index, size ->
+                val cornerShape = when (index) {
+                    0 -> RoundedCornerShape(
+                        topStart = height / 2,
+                        bottomStart = height / 2,
+                        topEnd = 4.dp,
+                        bottomEnd = 4.dp
+                    )
+                    BrowseGridTileSize.entries.lastIndex -> RoundedCornerShape(
+                        topStart = 4.dp,
+                        bottomStart = 4.dp,
+                        topEnd = height / 2,
+                        bottomEnd = height / 2
+                    )
+                    else -> RoundedCornerShape(4.dp)
+                }
+                BrowseModeToggleSegment(
+                    label = if (shortLabels) size.shortLabel else size.label,
+                    selected = tileSize == size,
+                    onClick = { onTileSizeChange(size) },
+                    gold = gold,
+                    fontSize = fontSize,
+                    horizontalPadding = horizontalPadding,
+                    height = height,
+                    cornerShape = cornerShape,
+                    minSegmentWidth = minSegmentWidth,
+                )
+            }
+        }
+    }
+    if (shortLabels) {
+        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+            trackContent()
+        }
+    } else {
+        trackContent()
+    }
+}
+
 @Composable
 private fun BrowseScreen(
     browseMode: BrowseMode,
     onBrowseModeChange: (BrowseMode) -> Unit,
+    gridTileSize: BrowseGridTileSize,
+    onGridTileSizeChange: (BrowseGridTileSize) -> Unit,
     artistsState: CachedResource<List<PlexArtist>>,
     allAlbumsState: CachedResource<List<PlexAlbum>>,
     artistsGridState: LazyGridState,
@@ -1745,17 +2016,13 @@ private fun BrowseScreen(
                 onBrowseModeChange = onBrowseModeChange,
                 compact = isLandscape
             )
+            BrowseGridSizeToggle(
+                tileSize = gridTileSize,
+                onTileSizeChange = onGridTileSizeChange,
+                compact = isLandscape,
+                modifier = Modifier.weight(1f)
+            )
             if (isLandscape) {
-                Spacer(Modifier.weight(1f))
-                if (tabRefreshing) {
-                    CircularProgressIndicator(
-                        modifier = Modifier
-                            .padding(end = 4.dp)
-                            .size(18.dp),
-                        color = Color(0xFFFFE5A93B),
-                        strokeWidth = 2.dp
-                    )
-                }
                 IconButton(
                     onClick = onShuffleLibrary,
                     modifier = Modifier.size(36.dp)
@@ -1767,6 +2034,7 @@ private fun BrowseScreen(
                         modifier = Modifier.size(22.dp)
                     )
                 }
+                TabRefreshIndicatorSlot(visible = tabRefreshing, compact = true)
             }
         }
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -1777,6 +2045,7 @@ private fun BrowseScreen(
                     artistsState.showTabLoading() -> CircularLoading()
                     artistsState.data != null -> ArtistsGrid(
                         artistsState.data!!,
+                        gridTileMinDp = gridTileSize.minDp,
                         state = artistsGridState,
                         onClick = onArtistClick,
                     )
@@ -1788,6 +2057,7 @@ private fun BrowseScreen(
                     allAlbumsState.showTabLoading() -> CircularLoading()
                     allAlbumsState.data != null -> AlbumsGrid(
                         allAlbumsState.data!!,
+                        gridTileMinDp = gridTileSize.minDp,
                         state = allAlbumsGridState,
                         onClick = onAlbumClick,
                     )
@@ -1798,20 +2068,16 @@ private fun BrowseScreen(
     }
 }
 
-@Composable
-fun browseLibraryGridColumns(): GridCells {
-    val widthDp = LocalConfiguration.current.screenWidthDp
-    return if (widthDp < 600) {
-        // Phones (portrait or landscape): nav rail + padding often leaves <320dp for one 160dp tile.
-        GridCells.Fixed(2)
-    } else {
-        // Tablets and wide layouts: fit as many columns as space allows.
-        GridCells.Adaptive(minSize = 160.dp)
-    }
-}
+fun browseLibraryGridColumns(gridTileMinDp: Int): GridCells =
+    GridCells.Adaptive(minSize = gridTileMinDp.dp)
 
 @Composable
-fun ArtistsGrid(artists: List<PlexArtist>, state: LazyGridState = rememberLazyGridState(), onClick: (PlexArtist) -> Unit) {
+fun ArtistsGrid(
+    artists: List<PlexArtist>,
+    gridTileMinDp: Int,
+    state: LazyGridState = rememberLazyGridState(),
+    onClick: (PlexArtist) -> Unit,
+) {
     if (artists.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("No artists found.", color = Color.LightGray)
@@ -1820,7 +2086,7 @@ fun ArtistsGrid(artists: List<PlexArtist>, state: LazyGridState = rememberLazyGr
     }
 
     LazyVerticalGrid(
-        columns = browseLibraryGridColumns(),
+        columns = browseLibraryGridColumns(gridTileMinDp),
         contentPadding = PaddingValues(12.dp),
         state = state,
         modifier = Modifier.fillMaxSize()
@@ -1861,6 +2127,7 @@ fun ArtistsGrid(artists: List<PlexArtist>, state: LazyGridState = rememberLazyGr
 @Composable
 fun AlbumsGrid(
     albums: List<PlexAlbum>,
+    gridTileMinDp: Int,
     title: String? = null,
     state: LazyGridState = rememberLazyGridState(),
     onClick: (PlexAlbum) -> Unit
@@ -1881,7 +2148,7 @@ fun AlbumsGrid(
             }
         } else {
             LazyVerticalGrid(
-                columns = browseLibraryGridColumns(),
+                columns = browseLibraryGridColumns(gridTileMinDp),
                 contentPadding = PaddingValues(12.dp),
                 state = state,
                 modifier = Modifier.weight(1f)
@@ -1930,7 +2197,12 @@ fun AlbumsGrid(
 }
 
 @Composable
-fun PlaylistsGrid(playlists: List<PlexPlaylist>, state: LazyGridState = rememberLazyGridState(), onClick: (PlexPlaylist) -> Unit) {
+fun PlaylistsGrid(
+    playlists: List<PlexPlaylist>,
+    gridTileMinDp: Int,
+    state: LazyGridState = rememberLazyGridState(),
+    onClick: (PlexPlaylist) -> Unit,
+) {
     if (playlists.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("No playlists found.", color = Color.LightGray)
@@ -1939,7 +2211,7 @@ fun PlaylistsGrid(playlists: List<PlexPlaylist>, state: LazyGridState = remember
     }
 
     LazyVerticalGrid(
-        columns = browseLibraryGridColumns(),
+        columns = browseLibraryGridColumns(gridTileMinDp),
         contentPadding = PaddingValues(12.dp),
         state = state,
         modifier = Modifier.fillMaxSize()
@@ -1978,6 +2250,7 @@ fun PlaylistsGrid(playlists: List<PlexPlaylist>, state: LazyGridState = remember
 @Composable
 fun AlbumsScreen(artist: PlexArtist, viewModel: PlexoraViewModel, state: LazyGridState = rememberLazyGridState()) {
     val albumsResource by viewModel.artistAlbumsState(artist.ratingKey).collectAsStateWithLifecycle()
+    val browseGridTileSize by viewModel.browseGridTileSize.collectAsStateWithLifecycle()
 
     LaunchedEffect(artist.ratingKey) {
         viewModel.loadArtistAlbums(artist)
@@ -2013,7 +2286,11 @@ fun AlbumsScreen(artist: PlexArtist, viewModel: PlexoraViewModel, state: LazyGri
             albumsResource.error != null && albumsResource.data.asStaleCacheData() == null ->
                 ErrorView(albumsResource.error!!) { viewModel.loadArtistAlbums(artist) }
             albumsResource.showTabLoading() -> CircularLoading()
-            albumsResource.data != null -> AlbumsGrid(albums = albumsResource.data!!, state = state) { album ->
+            albumsResource.data != null -> AlbumsGrid(
+                albums = albumsResource.data!!,
+                gridTileMinDp = browseGridTileSize.minDp,
+                state = state,
+            ) { album ->
                 viewModel.navigateTo(Screen.AlbumTracks(album))
             }
             else -> CircularLoading()
@@ -2801,6 +3078,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val browseGridTileSize by viewModel.browseGridTileSize.collectAsStateWithLifecycle()
     val versionInfo = remember(context) {
         runCatching {
             val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
@@ -2846,6 +3124,31 @@ fun SettingsScreen(
                 ) {
                     Text("Unlink and Reset App", color = Color.White)
                 }
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    "Library grid",
+                    color = Color(0xFFFFE5A93B),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+                Text(
+                    "Tile size for artists, albums, and playlists. Small fits more columns; Large shows bigger artwork.",
+                    color = Color.Gray,
+                    fontSize = 14.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                BrowseGridSizeToggle(
+                    tileSize = browseGridTileSize,
+                    onTileSizeChange = { viewModel.setBrowseGridTileSize(context, it) },
+                    compact = false
+                )
             }
         }
 
@@ -2926,3 +3229,5 @@ fun formatTime(ms: Long): String {
 
 private const val PIN_POLL_INTERVAL_MS = 3_000L
 private const val PIN_LINK_TIMEOUT_MS = 5 * 60 * 1000L
+private const val UI_PREFS_NAME = "ui_prefs"
+private const val UI_PREF_BROWSE_GRID_TILE_MIN_DP = "browse_grid_tile_min_dp"
