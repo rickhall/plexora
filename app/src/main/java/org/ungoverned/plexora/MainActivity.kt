@@ -621,6 +621,83 @@ class PlexoraViewModel : ViewModel() {
         _currentScreen.value = navigationBackStack.removeLast()
     }
 
+    /** From album tracks: back to artist if that screen is already on the stack, else open it. */
+    fun navigateArtistFromAlbumTracks(album: PlexAlbum) {
+        navigateToArtistByKey(
+            artistRatingKey = album.artistRatingKey,
+            artistTitle = album.artistTitle,
+        )
+    }
+
+    fun canOpenAlbumFromTrack(track: PlexTrack, contextAlbumRatingKey: String?): Boolean {
+        if (track.parentRatingKey.isEmpty()) return false
+        return track.parentRatingKey != contextAlbumRatingKey
+    }
+
+    fun canOpenArtistFromTrack(track: PlexTrack, contextAlbum: PlexAlbum? = null): Boolean {
+        if (track.grandparentRatingKey.isNotEmpty()) return true
+        val fallbackKey = contextAlbum?.artistRatingKey?.takeIf { it.isNotEmpty() } ?: return false
+        val albumArtist = contextAlbum.artistTitle
+        if (albumArtist.isNotBlank() && track.artistTitle.isNotBlank() &&
+            !track.artistTitle.equals(albumArtist, ignoreCase = true)
+        ) {
+            return false
+        }
+        return fallbackKey.isNotEmpty()
+    }
+
+    fun hasTrackContextMenu(track: PlexTrack, contextAlbum: PlexAlbum?): Boolean =
+        canOpenAlbumFromTrack(track, contextAlbum?.ratingKey) || canOpenArtistFromTrack(track, contextAlbum)
+
+    fun navigateToAlbumFromTrack(track: PlexTrack) {
+        if (track.parentRatingKey.isEmpty()) return
+        navigateTo(
+            Screen.AlbumTracks(
+                PlexAlbum(
+                    ratingKey = track.parentRatingKey,
+                    artistRatingKey = track.grandparentRatingKey,
+                    title = track.albumTitle.ifBlank { "Album" },
+                    artistTitle = track.artistTitle.ifBlank { "" },
+                    thumbUrl = track.thumbUrl,
+                )
+            )
+        )
+    }
+
+    fun navigateToArtistFromTrack(track: PlexTrack, contextAlbum: PlexAlbum? = null) {
+        val artistKey = track.grandparentRatingKey.ifEmpty {
+            if (canOpenArtistFromTrack(track, contextAlbum)) {
+                contextAlbum?.artistRatingKey.orEmpty()
+            } else {
+                ""
+            }
+        }
+        navigateToArtistByKey(
+            artistRatingKey = artistKey,
+            artistTitle = track.artistTitle.ifBlank { contextAlbum?.artistTitle.orEmpty() },
+        )
+    }
+
+    private fun navigateToArtistByKey(artistRatingKey: String, artistTitle: String) {
+        if (artistRatingKey.isEmpty()) return
+        val cameFromArtist = navigationBackStack.any {
+            it is Screen.ArtistAlbums && it.artist.ratingKey == artistRatingKey
+        }
+        if (cameFromArtist) {
+            navigateBack()
+        } else {
+            navigateTo(
+                Screen.ArtistAlbums(
+                    PlexArtist(
+                        ratingKey = artistRatingKey,
+                        title = artistTitle.ifBlank { "Artist" },
+                        thumbUrl = null,
+                    )
+                )
+            )
+        }
+    }
+
     private fun clearNavigationBackStack() {
         navigationBackStack.clear()
     }
@@ -2439,8 +2516,70 @@ fun PlaylistTracksScreen(playlist: PlexPlaylist, viewModel: PlexoraViewModel, st
         onBack = { viewModel.navigateBack() },
         onTrackClick = { list, index ->
             viewModel.playPlaylistTrackList(playlist, list, index)
-        }
+        },
+        trackContextMenu = viewModel,
+        onTrackGoToAlbum = { viewModel.navigateToAlbumFromTrack(it) },
+        onTrackGoToArtist = { viewModel.navigateToArtistFromTrack(it) },
     )
+}
+
+@Composable
+private fun TrackRowContextMenu(
+    track: PlexTrack,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    canOpenAlbum: Boolean,
+    canOpenArtist: Boolean,
+    onGoToAlbum: (PlexTrack) -> Unit,
+    onGoToArtist: (PlexTrack) -> Unit,
+) {
+    Box {
+        IconButton(
+            onClick = { onExpandedChange(true) },
+            modifier = Modifier.size(40.dp),
+        ) {
+            Icon(
+                Icons.Default.MoreVert,
+                contentDescription = "Track options",
+                tint = Color.Gray,
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { onExpandedChange(false) },
+        ) {
+            if (canOpenAlbum) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "Album: ${track.albumTitle.ifBlank { "Unknown" }}",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    onClick = {
+                        onExpandedChange(false)
+                        onGoToAlbum(track)
+                    },
+                )
+            }
+            if (canOpenArtist) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "Artist: ${track.artistTitle.ifBlank { "Unknown" }}",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    onClick = {
+                        onExpandedChange(false)
+                        onGoToArtist(track)
+                    },
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -2454,7 +2593,14 @@ fun TracksListContent(
     showOrdinalNumber: Boolean = false,
     isRefreshing: Boolean = false,
     albumDurationMs: Long = 0L,
+    subtitle: String? = null,
+    onSubtitleClick: (() -> Unit)? = null,
+    contextAlbum: PlexAlbum? = null,
+    onTrackGoToAlbum: ((PlexTrack) -> Unit)? = null,
+    onTrackGoToArtist: ((PlexTrack) -> Unit)? = null,
+    trackContextMenu: PlexoraViewModel? = null,
 ) {
+    var expandedMenuTrackKey by remember { mutableStateOf<String?>(null) }
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -2465,27 +2611,45 @@ fun TracksListContent(
             IconButton(onClick = onBack) {
                 Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
-            Row(
-                modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    title,
-                    color = Color.White,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                if (albumDurationMs > 0L) {
-                    Spacer(modifier = Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = formatAlbumDuration(albumDurationMs),
-                        color = MaterialTheme.colorScheme.primary,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        title,
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (albumDurationMs > 0L) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = formatAlbumDuration(albumDurationMs),
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                        )
+                    }
+                }
+                if (!subtitle.isNullOrBlank()) {
+                    val subtitleModifier = if (onSubtitleClick != null) {
+                        Modifier.clickable(onClick = onSubtitleClick)
+                    } else {
+                        Modifier
+                    }
+                    Text(
+                        text = subtitle,
+                        color = if (onSubtitleClick != null) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            Color.Gray
+                        },
+                        fontSize = 14.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = subtitleModifier,
                     )
                 }
             }
@@ -2514,28 +2678,60 @@ fun TracksListContent(
             ) {
                 items(tracks.size, key = { index -> tracks[index].ratingKey }) { index ->
                     val track = tracks[index]
+                    val canOpenAlbum = trackContextMenu?.canOpenAlbumFromTrack(track, contextAlbum?.ratingKey) == true
+                    val canOpenArtist = trackContextMenu?.canOpenArtistFromTrack(track, contextAlbum) == true
+                    val showContextMenu = onTrackGoToAlbum != null &&
+                        onTrackGoToArtist != null &&
+                        trackContextMenu != null &&
+                        trackContextMenu.hasTrackContextMenu(track, contextAlbum)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onTrackClick(tracks, index) }
-                            .padding(vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            text = "${if (showOrdinalNumber) index + 1 else track.index}.",
-                            color = Color(0xFFFFE5A93B),
-                            modifier = Modifier.width(32.dp),
-                            fontWeight = FontWeight.Bold
-                        )
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(track.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                            Text(track.artistTitle, color = Color.Gray, fontSize = 12.sp)
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { onTrackClick(tracks, index) }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "${if (showOrdinalNumber) index + 1 else track.index}.",
+                                color = Color(0xFFFFE5A93B),
+                                modifier = Modifier.width(32.dp),
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    track.title,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                )
+                                Text(track.artistTitle, color = Color.Gray, fontSize = 12.sp)
+                            }
                         }
                         Text(
                             text = formatTime(track.durationMs),
                             color = Color.Gray,
-                            fontSize = 12.sp
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(end = if (showContextMenu) 0.dp else 4.dp),
                         )
+                        if (showContextMenu) {
+                            TrackRowContextMenu(
+                                track = track,
+                                expanded = expandedMenuTrackKey == track.ratingKey,
+                                onExpandedChange = { open ->
+                                    expandedMenuTrackKey = if (open) track.ratingKey else null
+                                },
+                                canOpenAlbum = canOpenAlbum,
+                                canOpenArtist = canOpenArtist,
+                                onGoToAlbum = onTrackGoToAlbum,
+                                onGoToArtist = onTrackGoToArtist,
+                            )
+                        }
                     }
                     HorizontalDivider(color = Color(0xFF232329))
                 }
@@ -2589,6 +2785,12 @@ fun TracksScreen(album: PlexAlbum, viewModel: PlexoraViewModel, state: LazyListS
         viewModel.cacheAlbumDurationFromTracks(album.ratingKey, tracks, totalTracks)
     }
 
+    val albumArtistSubtitle = when {
+        album.artistTitle.isNotBlank() -> album.artistTitle
+        album.artistRatingKey.isNotEmpty() -> "View artist"
+        else -> null
+    }
+
     TracksListContent(
         title = album.title,
         tracks = tracks,
@@ -2597,10 +2799,20 @@ fun TracksScreen(album: PlexAlbum, viewModel: PlexoraViewModel, state: LazyListS
         state = state,
         showOrdinalNumber = false,
         albumDurationMs = albumDurationMs,
+        subtitle = albumArtistSubtitle,
+        onSubtitleClick = if (album.artistRatingKey.isNotEmpty()) {
+            { viewModel.navigateArtistFromAlbumTracks(album) }
+        } else {
+            null
+        },
         onBack = { viewModel.navigateBack() },
         onTrackClick = { list, index ->
             viewModel.playAlbumTrackList(album, list, index)
-        }
+        },
+        contextAlbum = album,
+        trackContextMenu = viewModel,
+        onTrackGoToAlbum = { viewModel.navigateToAlbumFromTrack(it) },
+        onTrackGoToArtist = { viewModel.navigateToArtistFromTrack(it, album) },
     )
 }
 

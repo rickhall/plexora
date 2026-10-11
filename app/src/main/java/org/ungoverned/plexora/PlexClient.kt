@@ -64,7 +64,8 @@ data class PlexTrack(
     val durationMs: Long,
     val streamUrl: String,
     val thumbUrl: String?,
-    val parentRatingKey: String = ""
+    val parentRatingKey: String = "",
+    val grandparentRatingKey: String = "",
 )
 
 data class PlexTrackResponse(
@@ -896,7 +897,8 @@ class PlexClient(private val context: Context) {
                         durationMs = obj.optLong("duration", 0L),
                         streamUrl = streamUrl,
                         thumbUrl = getImageUrl(thumbPath),
-                        parentRatingKey = obj.optString("parentRatingKey", "")
+                        parentRatingKey = obj.optString("parentRatingKey", ""),
+                        grandparentRatingKey = obj.optString("grandparentRatingKey", ""),
                     )
                 )
             }

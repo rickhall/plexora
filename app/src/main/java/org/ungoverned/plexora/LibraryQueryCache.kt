@@ -281,6 +281,7 @@ class LibraryQueryCache(context: Context) {
                     .put("streamUrl", track.streamUrl)
                     .put("thumbUrl", track.thumbUrl)
                     .put("parentRatingKey", track.parentRatingKey)
+                    .put("grandparentRatingKey", track.grandparentRatingKey)
             )
         }
         return array
@@ -299,7 +300,8 @@ class LibraryQueryCache(context: Context) {
                     durationMs = o.optLong("durationMs", 0L),
                     streamUrl = o.getString("streamUrl"),
                     thumbUrl = o.optString("thumbUrl").ifEmpty { null },
-                    parentRatingKey = o.optString("parentRatingKey", "")
+                    parentRatingKey = o.optString("parentRatingKey", ""),
+                    grandparentRatingKey = o.optString("grandparentRatingKey", ""),
                 )
             )
         }
