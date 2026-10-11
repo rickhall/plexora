@@ -92,6 +92,11 @@ enum class BrowseMode {
     Albums
 }
 
+enum class ArtistAlbumSort {
+    Title,
+    Year,
+}
+
 /** Minimum tile width for library grids; smaller values fit more columns. */
 enum class BrowseGridTileSize(val minDp: Int, val label: String, val shortLabel: String) {
     Compact(96, "Small", "S"),
@@ -155,6 +160,9 @@ class PlexoraViewModel : ViewModel() {
     private val _browseGridTileSize = MutableStateFlow(BrowseGridTileSize.Default)
     val browseGridTileSize: StateFlow<BrowseGridTileSize> = _browseGridTileSize.asStateFlow()
 
+    private val _artistAlbumSort = MutableStateFlow(ArtistAlbumSort.Title)
+    val artistAlbumSort: StateFlow<ArtistAlbumSort> = _artistAlbumSort.asStateFlow()
+
     private val _albumDurationsMs = MutableStateFlow<Map<String, Long>>(emptyMap())
     val albumDurationsMs: StateFlow<Map<String, Long>> = _albumDurationsMs.asStateFlow()
     private val albumDurationLoadInFlight = mutableSetOf<String>()
@@ -207,6 +215,7 @@ class PlexoraViewModel : ViewModel() {
         libraryCache = LibraryQueryCache(context.applicationContext)
         _albumDurationsMs.value = libraryCache.getAllAlbumDurations()
         _browseGridTileSize.value = loadBrowseGridTileSize(context)
+        _artistAlbumSort.value = loadArtistAlbumSort(context)
         if (hasBootstrapped) return
         hasBootstrapped = true
         plexClient.clearIncompleteSetup()
@@ -360,6 +369,16 @@ class PlexoraViewModel : ViewModel() {
             .apply()
     }
 
+    fun setArtistAlbumSort(context: Context, sort: ArtistAlbumSort) {
+        if (_artistAlbumSort.value == sort) return
+        _artistAlbumSort.value = sort
+        context.applicationContext
+            .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(UI_PREF_ARTIST_ALBUM_SORT, sort.name)
+            .apply()
+    }
+
     private fun loadBrowseGridTileSize(context: Context): BrowseGridTileSize {
         val prefs = context.applicationContext.getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
         if (!prefs.contains(UI_PREF_BROWSE_GRID_TILE_MIN_DP)) {
@@ -368,6 +387,13 @@ class PlexoraViewModel : ViewModel() {
         return BrowseGridTileSize.fromMinDp(
             prefs.getInt(UI_PREF_BROWSE_GRID_TILE_MIN_DP, BrowseGridTileSize.Default.minDp)
         )
+    }
+
+    private fun loadArtistAlbumSort(context: Context): ArtistAlbumSort {
+        val name = context.applicationContext
+            .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(UI_PREF_ARTIST_ALBUM_SORT, ArtistAlbumSort.Title.name)
+        return ArtistAlbumSort.entries.find { it.name == name } ?: ArtistAlbumSort.Title
     }
 
     fun setBrowseMode(mode: BrowseMode) {
@@ -1949,6 +1975,59 @@ private fun BrowseModeToggle(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+private fun ArtistAlbumSortToggle(
+    sort: ArtistAlbumSort,
+    onSortChange: (ArtistAlbumSort) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val gold = Color(0xFFFFE5A93B)
+    val trackColor = Color(0xFF2A2A30)
+    val height = 28.dp
+    val fontSize = 12.sp
+    val horizontalPadding = 10.dp
+    val pillShape = RoundedCornerShape(height / 2)
+    Row(
+        modifier = modifier
+            .wrapContentWidth()
+            .height(height)
+            .background(trackColor, pillShape),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        BrowseModeToggleSegment(
+            label = "A–Z",
+            selected = sort == ArtistAlbumSort.Title,
+            onClick = { onSortChange(ArtistAlbumSort.Title) },
+            gold = gold,
+            fontSize = fontSize,
+            horizontalPadding = horizontalPadding,
+            height = height,
+            cornerShape = RoundedCornerShape(
+                topStart = height / 2,
+                bottomStart = height / 2,
+                topEnd = 4.dp,
+                bottomEnd = 4.dp,
+            ),
+        )
+        BrowseModeToggleSegment(
+            label = "Year",
+            selected = sort == ArtistAlbumSort.Year,
+            onClick = { onSortChange(ArtistAlbumSort.Year) },
+            gold = gold,
+            fontSize = fontSize,
+            horizontalPadding = horizontalPadding,
+            height = height,
+            cornerShape = RoundedCornerShape(
+                topStart = 4.dp,
+                bottomStart = 4.dp,
+                topEnd = height / 2,
+                bottomEnd = height / 2,
+            ),
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 private fun BrowseModeToggleSegment(
     label: String,
     selected: Boolean,
@@ -2202,6 +2281,15 @@ private fun BrowseScreen(
 fun browseLibraryGridColumns(gridTileMinDp: Int): GridCells =
     GridCells.Adaptive(minSize = gridTileMinDp.dp)
 
+private fun sortArtistAlbums(albums: List<PlexAlbum>, sort: ArtistAlbumSort): List<PlexAlbum> =
+    when (sort) {
+        ArtistAlbumSort.Title -> albums.sortedBy { it.title.lowercase() }
+        ArtistAlbumSort.Year -> albums.sortedWith(
+            compareBy<PlexAlbum> { if (it.year <= 0) Int.MAX_VALUE else it.year }
+                .thenBy { it.title.lowercase() }
+        )
+    }
+
 @Composable
 fun ArtistsGrid(
     artists: List<PlexArtist>,
@@ -2298,6 +2386,7 @@ fun AlbumsGrid(
     viewModel: PlexoraViewModel,
     title: String? = null,
     state: LazyGridState = rememberLazyGridState(),
+    secondaryLabel: (PlexAlbum) -> String = { it.artistTitle },
     onClick: (PlexAlbum) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -2350,7 +2439,7 @@ fun AlbumsGrid(
                                 modifier = Modifier.padding(top = 8.dp, start = 8.dp, end = 8.dp)
                             )
                             Text(
-                                text = album.artistTitle,
+                                text = secondaryLabel(album),
                                 color = Color.Gray,
                                 fontSize = 12.sp,
                                 maxLines = 1,
@@ -2418,11 +2507,20 @@ fun PlaylistsGrid(
 
 @Composable
 fun AlbumsScreen(artist: PlexArtist, viewModel: PlexoraViewModel, state: LazyGridState = rememberLazyGridState()) {
+    val context = LocalContext.current
     val albumsResource by viewModel.artistAlbumsState(artist.ratingKey).collectAsStateWithLifecycle()
     val browseGridTileSize by viewModel.browseGridTileSize.collectAsStateWithLifecycle()
+    val artistAlbumSort by viewModel.artistAlbumSort.collectAsStateWithLifecycle()
+    val sortedAlbums = remember(albumsResource.data, artistAlbumSort) {
+        albumsResource.data?.let { sortArtistAlbums(it, artistAlbumSort) }
+    }
 
     LaunchedEffect(artist.ratingKey) {
         viewModel.loadArtistAlbums(artist)
+    }
+
+    LaunchedEffect(artistAlbumSort) {
+        state.scrollToItem(0)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -2435,14 +2533,30 @@ fun AlbumsScreen(artist: PlexArtist, viewModel: PlexoraViewModel, state: LazyGri
             IconButton(onClick = { viewModel.navigateBack() }) {
                 Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
-            Text(
-                artist.title,
-                color = Color.White,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    artist.title,
+                    color = Color.White,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                albumsResource.data?.size?.let { count ->
+                    Text(
+                        text = if (count == 1) "1 album" else "$count albums",
+                        color = Color(0xFF7A7A82),
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                    )
+                }
+            }
+            ArtistAlbumSortToggle(
+                sort = artistAlbumSort,
+                onSortChange = { viewModel.setArtistAlbumSort(context, it) },
             )
             if (albumsResource.isRefreshing) {
+                Spacer(modifier = Modifier.width(4.dp))
                 CircularProgressIndicator(
                     modifier = Modifier.size(20.dp),
                     color = Color(0xFFFFE5A93B),
@@ -2455,11 +2569,18 @@ fun AlbumsScreen(artist: PlexArtist, viewModel: PlexoraViewModel, state: LazyGri
             albumsResource.error != null && albumsResource.data.asStaleCacheData() == null ->
                 ErrorView(albumsResource.error!!) { viewModel.loadArtistAlbums(artist) }
             albumsResource.showTabLoading() -> CircularLoading()
-            albumsResource.data != null -> AlbumsGrid(
-                albums = albumsResource.data!!,
+            sortedAlbums != null -> AlbumsGrid(
+                albums = sortedAlbums,
                 gridTileMinDp = browseGridTileSize.minDp,
                 viewModel = viewModel,
                 state = state,
+                secondaryLabel = { album ->
+                    when (artistAlbumSort) {
+                        ArtistAlbumSort.Year ->
+                            if (album.year > 0) album.year.toString() else "—"
+                        ArtistAlbumSort.Title -> album.artistTitle
+                    }
+                },
             ) { album ->
                 viewModel.navigateTo(Screen.AlbumTracks(album))
             }
@@ -3574,3 +3695,4 @@ private const val PIN_POLL_INTERVAL_MS = 3_000L
 private const val PIN_LINK_TIMEOUT_MS = 5 * 60 * 1000L
 private const val UI_PREFS_NAME = "ui_prefs"
 private const val UI_PREF_BROWSE_GRID_TILE_MIN_DP = "browse_grid_tile_min_dp"
+private const val UI_PREF_ARTIST_ALBUM_SORT = "artist_album_sort"

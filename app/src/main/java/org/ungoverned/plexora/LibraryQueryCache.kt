@@ -220,6 +220,7 @@ class LibraryQueryCache(context: Context) {
                     .put("artistTitle", album.artistTitle)
                     .put("thumbUrl", album.thumbUrl)
                     .put("durationMs", album.durationMs)
+                    .put("year", album.year)
             )
         }
         return array
@@ -236,6 +237,7 @@ class LibraryQueryCache(context: Context) {
                     artistTitle = o.optString("artistTitle", ""),
                     thumbUrl = o.optString("thumbUrl").ifEmpty { null },
                     durationMs = o.optLong("durationMs", 0L),
+                    year = o.optInt("year", 0),
                 )
             )
         }

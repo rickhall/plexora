@@ -47,6 +47,8 @@ data class PlexAlbum(
     val thumbUrl: String?,
     /** Total album length from Plex, milliseconds; 0 if unknown. */
     val durationMs: Long = 0L,
+    /** Release year from Plex; 0 if unknown. */
+    val year: Int = 0,
 )
 
 data class PlexPlaylist(
@@ -679,6 +681,7 @@ class PlexClient(private val context: Context) {
                         obj.optString("parentTitle", "Unknown Artist"),
                         getImageUrl(obj.optString("thumb").ifEmpty { null }),
                         durationMs = obj.optLong("duration", 0L),
+                        year = obj.optInt("year", 0),
                     )
                 )
             }
