@@ -155,6 +155,10 @@ class PlexoraViewModel : ViewModel() {
     private val _browseGridTileSize = MutableStateFlow(BrowseGridTileSize.Default)
     val browseGridTileSize: StateFlow<BrowseGridTileSize> = _browseGridTileSize.asStateFlow()
 
+    private val _albumDurationsMs = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val albumDurationsMs: StateFlow<Map<String, Long>> = _albumDurationsMs.asStateFlow()
+    private val albumDurationLoadInFlight = mutableSetOf<String>()
+
     private val navigationBackStack = ArrayDeque<Screen>()
 
     private val _mediaController = MutableStateFlow<MediaController?>(null)
@@ -200,6 +204,7 @@ class PlexoraViewModel : ViewModel() {
     fun init(context: Context) {
         plexClient = PlexClient(context)
         libraryCache = LibraryQueryCache(context.applicationContext)
+        _albumDurationsMs.value = libraryCache.getAllAlbumDurations()
         _browseGridTileSize.value = loadBrowseGridTileSize(context)
         plexClient.clearIncompleteSetup()
         if (plexClient.isConfigured()) {
@@ -214,6 +219,7 @@ class PlexoraViewModel : ViewModel() {
     fun initForAutomotiveSignIn(context: Context) {
         plexClient = PlexClient(context)
         libraryCache = LibraryQueryCache(context.applicationContext)
+        _albumDurationsMs.value = libraryCache.getAllAlbumDurations()
         _currentScreen.value = Screen.Setup
         _uiState.value = PlexUiState.ConfigNeeded
         connectController(context.applicationContext)
@@ -223,6 +229,7 @@ class PlexoraViewModel : ViewModel() {
     fun initForAutomotiveSettings(context: Context) {
         plexClient = PlexClient(context)
         libraryCache = LibraryQueryCache(context.applicationContext)
+        _albumDurationsMs.value = libraryCache.getAllAlbumDurations()
         _currentScreen.value = Screen.Settings
         _uiState.value = if (plexClient.isConfigured()) {
             PlexUiState.ArtistsList(emptyList())
@@ -411,6 +418,46 @@ class PlexoraViewModel : ViewModel() {
                 }
             }
         }
+    }
+
+    fun ensureAlbumDurationLoaded(albumRatingKey: String) {
+        _albumDurationsMs.value[albumRatingKey]?.takeIf { it > 0L }?.let { return }
+        val cached = libraryCache.getAlbumDurationMs(albumRatingKey)
+        if (cached > 0L) {
+            publishAlbumDuration(albumRatingKey, cached)
+            return
+        }
+        synchronized(albumDurationLoadInFlight) {
+            if (albumRatingKey in albumDurationLoadInFlight) return
+            albumDurationLoadInFlight.add(albumRatingKey)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val durationMs = plexClient.resolveAlbumDurationMs(albumRatingKey)
+                if (durationMs > 0L) {
+                    publishAlbumDuration(albumRatingKey, durationMs)
+                }
+            } finally {
+                synchronized(albumDurationLoadInFlight) {
+                    albumDurationLoadInFlight.remove(albumRatingKey)
+                }
+            }
+        }
+    }
+
+    fun cacheAlbumDurationFromTracks(albumRatingKey: String, tracks: List<PlexTrack>, totalSize: Int) {
+        if (totalSize <= 0 || tracks.size < totalSize) return
+        val durationMs = tracks.sumOf { it.durationMs }
+        if (durationMs > 0L) {
+            publishAlbumDuration(albumRatingKey, durationMs)
+        }
+    }
+
+    private fun publishAlbumDuration(albumRatingKey: String, durationMs: Long) {
+        libraryCache.putAlbumDurationMs(albumRatingKey, durationMs)
+        val current = _albumDurationsMs.value
+        if (current[albumRatingKey] == durationMs) return
+        _albumDurationsMs.value = current + (albumRatingKey to durationMs)
     }
 
     fun loadAlbumTracks(album: PlexAlbum) {
@@ -994,7 +1041,8 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                                 },
                                 onRetryArtists = { viewModel.loadBrowse(BrowseMode.Artists) },
                                 onRetryAlbums = { viewModel.loadBrowse(BrowseMode.Albums) },
-                                onShuffleLibrary = { viewModel.shuffleLibrary() }
+                                onShuffleLibrary = { viewModel.shuffleLibrary() },
+                                viewModel = viewModel,
                             )
                         }
                         is Screen.RecentlyAdded -> {
@@ -1005,6 +1053,7 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                                 recentAlbumsState.data != null -> AlbumsGrid(
                                     recentAlbumsState.data!!,
                                     gridTileMinDp = browseGridTileSize.minDp,
+                                    viewModel = viewModel,
                                     state = recentlyAddedGridState
                                 ) { album ->
                                     viewModel.navigateTo(Screen.AlbumTracks(album))
@@ -1994,6 +2043,7 @@ private fun BrowseScreen(
     onRetryArtists: () -> Unit,
     onRetryAlbums: () -> Unit,
     onShuffleLibrary: () -> Unit,
+    viewModel: PlexoraViewModel,
 ) {
     val isLandscape =
         LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -2058,6 +2108,7 @@ private fun BrowseScreen(
                     allAlbumsState.data != null -> AlbumsGrid(
                         allAlbumsState.data!!,
                         gridTileMinDp = gridTileSize.minDp,
+                        viewModel = viewModel,
                         state = allAlbumsGridState,
                         onClick = onAlbumClick,
                     )
@@ -2125,9 +2176,46 @@ fun ArtistsGrid(
 }
 
 @Composable
+private fun AlbumGridCover(
+    thumbUrl: String?,
+    title: String,
+    albumRatingKey: String,
+    viewModel: PlexoraViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val albumDurations by viewModel.albumDurationsMs.collectAsStateWithLifecycle()
+    val durationMs = albumDurations[albumRatingKey] ?: 0L
+    LaunchedEffect(albumRatingKey) {
+        viewModel.ensureAlbumDurationLoaded(albumRatingKey)
+    }
+    Box(modifier = modifier) {
+        AsyncImage(
+            model = thumbUrl,
+            contentDescription = title,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop,
+        )
+        if (durationMs > 0L) {
+            Text(
+                text = formatAlbumDuration(durationMs),
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(5.dp)
+                    .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 5.dp, vertical = 2.dp),
+            )
+        }
+    }
+}
+
+@Composable
 fun AlbumsGrid(
     albums: List<PlexAlbum>,
     gridTileMinDp: Int,
+    viewModel: PlexoraViewModel,
     title: String? = null,
     state: LazyGridState = rememberLazyGridState(),
     onClick: (PlexAlbum) -> Unit
@@ -2162,14 +2250,15 @@ fun AlbumsGrid(
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            AsyncImage(
-                                model = album.thumbUrl,
-                                contentDescription = album.title,
+                            AlbumGridCover(
+                                thumbUrl = album.thumbUrl,
+                                title = album.title,
+                                albumRatingKey = album.ratingKey,
+                                viewModel = viewModel,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .aspectRatio(1f)
                                     .clip(browseTileShape),
-                                contentScale = ContentScale.Crop
                             )
                             Text(
                                 text = album.title,
@@ -2289,6 +2378,7 @@ fun AlbumsScreen(artist: PlexArtist, viewModel: PlexoraViewModel, state: LazyGri
             albumsResource.data != null -> AlbumsGrid(
                 albums = albumsResource.data!!,
                 gridTileMinDp = browseGridTileSize.minDp,
+                viewModel = viewModel,
                 state = state,
             ) { album ->
                 viewModel.navigateTo(Screen.AlbumTracks(album))
@@ -2359,7 +2449,8 @@ fun TracksListContent(
     onTrackClick: (List<PlexTrack>, Int) -> Unit,
     state: LazyListState = rememberLazyListState(),
     showOrdinalNumber: Boolean = false,
-    isRefreshing: Boolean = false
+    isRefreshing: Boolean = false,
+    albumDurationMs: Long = 0L,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -2371,13 +2462,30 @@ fun TracksListContent(
             IconButton(onClick = onBack) {
                 Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
-            Text(
-                title,
-                color = Color.White,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
-            )
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    title,
+                    color = Color.White,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (albumDurationMs > 0L) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = formatAlbumDuration(albumDurationMs),
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                }
+            }
             if (isRefreshing) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(20.dp),
@@ -2437,11 +2545,14 @@ fun TracksListContent(
 fun TracksScreen(album: PlexAlbum, viewModel: PlexoraViewModel, state: LazyListState = rememberLazyListState()) {
     val context = LocalContext.current
     val tracksResource by viewModel.albumTracksState(album.ratingKey).collectAsStateWithLifecycle()
+    val albumDurations by viewModel.albumDurationsMs.collectAsStateWithLifecycle()
+    val albumDurationMs = albumDurations[album.ratingKey] ?: 0L
     var tracks by remember(album.ratingKey) { mutableStateOf<List<PlexTrack>>(emptyList()) }
     var totalTracks by remember(album.ratingKey) { mutableStateOf(0) }
     var isFetchingMore by remember { mutableStateOf(false) }
 
     LaunchedEffect(album.ratingKey) {
+        viewModel.ensureAlbumDurationLoaded(album.ratingKey)
         viewModel.loadAlbumTracks(album)
     }
 
@@ -2471,6 +2582,10 @@ fun TracksScreen(album: PlexAlbum, viewModel: PlexoraViewModel, state: LazyListS
         }
     }
 
+    LaunchedEffect(tracks, totalTracks) {
+        viewModel.cacheAlbumDurationFromTracks(album.ratingKey, tracks, totalTracks)
+    }
+
     TracksListContent(
         title = album.title,
         tracks = tracks,
@@ -2478,6 +2593,7 @@ fun TracksScreen(album: PlexAlbum, viewModel: PlexoraViewModel, state: LazyListS
         isRefreshing = tracksResource.isRefreshing,
         state = state,
         showOrdinalNumber = false,
+        albumDurationMs = albumDurationMs,
         onBack = { viewModel.navigateBack() },
         onTrackClick = { list, index ->
             viewModel.playAlbumTrackList(album, list, index)
@@ -3225,6 +3341,18 @@ fun formatTime(ms: Long): String {
     val seconds = (ms / 1000) % 60
     val minutes = (ms / (1000 * 60)) % 60
     return String.format("%d:%02d", minutes, seconds)
+}
+
+fun formatAlbumDuration(ms: Long): String {
+    val totalSeconds = (ms / 1000).coerceAtLeast(0L)
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) {
+        String.format("%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format("%d:%02d", minutes, seconds)
+    }
 }
 
 private const val PIN_POLL_INTERVAL_MS = 3_000L

@@ -44,7 +44,9 @@ data class PlexAlbum(
     val artistRatingKey: String,
     val title: String,
     val artistTitle: String,
-    val thumbUrl: String?
+    val thumbUrl: String?,
+    /** Total album length from Plex, milliseconds; 0 if unknown. */
+    val durationMs: Long = 0L,
 )
 
 data class PlexPlaylist(
@@ -109,6 +111,7 @@ class PlexClient(private val context: Context) {
         .build()
 
     private val prefs = context.getSharedPreferences("plex_prefs", Context.MODE_PRIVATE)
+    private val albumDurationCache = mutableMapOf<String, Long>()
 
     fun getServerUrl(): String = prefs.getString("server_url", "") ?: ""
     fun getPlexToken(): String = prefs.getString("plex_token", "") ?: ""
@@ -174,11 +177,76 @@ class PlexClient(private val context: Context) {
     }
 
     fun clearCaches() {
+        albumDurationCache.clear()
         try {
             client.cache?.evictAll()
         } catch (e: Exception) {
             Log.e(tag, "Error clearing metadata cache", e)
         }
+    }
+
+    /** Plex often omits album duration on list endpoints; resolve via detail metadata or track sum. */
+    fun resolveAlbumDurationMs(albumRatingKey: String): Long {
+        synchronized(albumDurationCache) {
+            albumDurationCache[albumRatingKey]?.takeIf { it > 0L }?.let { return it }
+        }
+        var durationMs = readAlbumDurationFromMetadata(albumRatingKey)
+        if (durationMs <= 0L) {
+            durationMs = sumAlbumTrackDurationsMs(albumRatingKey)
+        }
+        if (durationMs > 0L) {
+            synchronized(albumDurationCache) {
+                albumDurationCache[albumRatingKey] = durationMs
+            }
+        }
+        return durationMs
+    }
+
+    private fun readAlbumDurationFromMetadata(albumRatingKey: String): Long {
+        val jsonStr = executeGetRequest(buildUrl("/library/metadata/$albumRatingKey")) ?: return 0L
+        return try {
+            val meta = JSONObject(jsonStr)
+                .getJSONObject("MediaContainer")
+                .optJSONArray("Metadata")
+                ?.optJSONObject(0)
+                ?: return 0L
+            meta.optLong("duration", 0L)
+        } catch (e: Exception) {
+            Log.w(tag, "Could not read album duration metadata for $albumRatingKey", e)
+            0L
+        }
+    }
+
+    private fun sumAlbumTrackDurationsMs(albumRatingKey: String): Long {
+        var totalMs = 0L
+        var offset = 0
+        val pageSize = 300
+        while (true) {
+            val jsonStr = executeGetRequest(
+                buildUrl(
+                    "/library/metadata/$albumRatingKey/children",
+                    mapOf(
+                        "X-Plex-Container-Start" to offset.toString(),
+                        "X-Plex-Container-Size" to pageSize.toString(),
+                    ),
+                ),
+            ) ?: break
+            val container = try {
+                JSONObject(jsonStr).getJSONObject("MediaContainer")
+            } catch (e: Exception) {
+                Log.w(tag, "Could not parse album children for duration: $albumRatingKey", e)
+                break
+            }
+            val totalSize = container.optInt("totalSize", 0)
+            val array = container.optJSONArray("Metadata") ?: break
+            if (array.length() == 0) break
+            for (i in 0 until array.length()) {
+                totalMs += array.getJSONObject(i).optLong("duration", 0L)
+            }
+            offset += array.length()
+            if (totalSize <= 0 || offset >= totalSize) break
+        }
+        return totalMs
     }
 
     fun signOut(): Boolean {
@@ -608,7 +676,8 @@ class PlexClient(private val context: Context) {
                         obj.optString("parentRatingKey", ""),
                         obj.getString("title"),
                         obj.optString("parentTitle", "Unknown Artist"),
-                        getImageUrl(obj.optString("thumb").ifEmpty { null })
+                        getImageUrl(obj.optString("thumb").ifEmpty { null }),
+                        durationMs = obj.optLong("duration", 0L),
                     )
                 )
             }

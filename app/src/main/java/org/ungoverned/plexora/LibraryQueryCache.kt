@@ -12,6 +12,11 @@ class LibraryQueryCache(context: Context) {
 
     private val cacheDir = File(context.cacheDir, "library_query_cache").apply { mkdirs() }
     private val memory = mutableMapOf<String, CacheEnvelope>()
+    private val albumDurationMs = mutableMapOf<String, Long>()
+
+    init {
+        loadAlbumDurationsFromDisk()
+    }
 
     fun artistsKey(sectionId: String): String = "artists:$sectionId"
     fun allAlbumsKey(sectionId: String): String = "albums:all:$sectionId"
@@ -66,9 +71,43 @@ class LibraryQueryCache(context: Context) {
             cached.totalSize == totalSize &&
             fingerprint(cached.tracks.map { it.ratingKey }) == fingerprint(fresh.map { it.ratingKey })
 
+    fun getAlbumDurationMs(ratingKey: String): Long = albumDurationMs[ratingKey] ?: 0L
+
+    fun getAllAlbumDurations(): Map<String, Long> = albumDurationMs.toMap()
+
+    fun putAlbumDurationMs(ratingKey: String, durationMs: Long) {
+        if (durationMs <= 0L) return
+        if (albumDurationMs[ratingKey] == durationMs) return
+        albumDurationMs[ratingKey] = durationMs
+        persistAlbumDurations()
+    }
+
     fun clearAll() {
         memory.clear()
+        albumDurationMs.clear()
         cacheDir.listFiles()?.forEach { it.delete() }
+    }
+
+    private fun albumDurationsFile(): File = File(cacheDir, "album_durations.json")
+
+    private fun loadAlbumDurationsFromDisk() {
+        val file = albumDurationsFile()
+        if (!file.exists()) return
+        runCatching {
+            val json = JSONObject(file.readText())
+            json.keys().forEach { key ->
+                val ms = json.optLong(key, 0L)
+                if (ms > 0L) albumDurationMs[key] = ms
+            }
+        }
+    }
+
+    private fun persistAlbumDurations() {
+        runCatching {
+            val json = JSONObject()
+            albumDurationMs.forEach { (key, ms) -> json.put(key, ms) }
+            albumDurationsFile().writeText(json.toString())
+        }
     }
 
     private data class CacheEnvelope(
@@ -180,6 +219,7 @@ class LibraryQueryCache(context: Context) {
                     .put("title", album.title)
                     .put("artistTitle", album.artistTitle)
                     .put("thumbUrl", album.thumbUrl)
+                    .put("durationMs", album.durationMs)
             )
         }
         return array
@@ -194,7 +234,8 @@ class LibraryQueryCache(context: Context) {
                     artistRatingKey = o.optString("artistRatingKey", ""),
                     title = o.getString("title"),
                     artistTitle = o.optString("artistTitle", ""),
-                    thumbUrl = o.optString("thumbUrl").ifEmpty { null }
+                    thumbUrl = o.optString("thumbUrl").ifEmpty { null },
+                    durationMs = o.optLong("durationMs", 0L),
                 )
             )
         }
