@@ -1054,6 +1054,7 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
 
         if (showFullPlayer && currentTrack != null) {
             FullPlayerScreen(
+                modifier = Modifier.fillMaxSize(),
                 mediaItem = currentTrack!!,
                 isPlaying = isPlaying,
                 shuffleModeEnabled = shuffleModeEnabled,
@@ -2317,11 +2318,16 @@ fun FullPlayerScreen(
     }
 
     val sheetContentHeight = fullScreenBottomSheetHeight()
+    val sheetMaxWidth = fullScreenBottomSheetWidth()
+    LaunchedEffect(playerSheetState) {
+        playerSheetState.expand()
+    }
 
     ModalBottomSheet(
         onDismissRequest = onClose,
         sheetState = playerSheetState,
         modifier = modifier,
+        sheetMaxWidth = sheetMaxWidth,
         containerColor = Color(0xFF121214),
         dragHandle = null,
         contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
@@ -2387,17 +2393,26 @@ fun FullPlayerScreen(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
-                            .padding(bottom = 12.dp),
+                            .padding(vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(24.dp)
                     ) {
-                        FullPlayerArtwork(
-                            mediaItem = mediaItem,
+                        Box(
                             modifier = Modifier
-                                .weight(1f)
+                                .weight(0.42f)
                                 .fillMaxHeight()
-                                .aspectRatio(1f, matchHeightConstraintsFirst = true)
-                        )
+                                .padding(12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            // Width-driven square (like portrait) — avoid height/box constraints that
+                            // change while the bottom sheet is dragging.
+                            FullPlayerArtwork(
+                                mediaItem = mediaItem,
+                                modifier = Modifier
+                                    .fillMaxWidth(0.92f)
+                                    .aspectRatio(1f)
+                            )
+                        }
                         FullPlayerDetailsAndControls(
                             mediaItem = mediaItem,
                             isPlaying = isPlaying,
@@ -2412,8 +2427,8 @@ fun FullPlayerScreen(
                             onShowQueue = { showQueue = true },
                             showQueueButton = queueItems.isNotEmpty(),
                             modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
+                                .weight(0.58f)
+                                .fillMaxWidth()
                         )
                     }
                 }
@@ -2422,9 +2437,13 @@ fun FullPlayerScreen(
     }
 
     if (showQueue) {
+        LaunchedEffect(queueSheetState) {
+            queueSheetState.expand()
+        }
         ModalBottomSheet(
             onDismissRequest = { showQueue = false },
             sheetState = queueSheetState,
+            sheetMaxWidth = sheetMaxWidth,
             containerColor = Color(0xFF1E1E24),
             dragHandle = null,
             contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
@@ -2557,6 +2576,20 @@ private fun fullScreenBottomSheetHeight(): Dp {
             windowHeightPx.toDp()
         } else {
             configuration.screenHeightDp.dp
+        }
+    }
+}
+
+@Composable
+private fun fullScreenBottomSheetWidth(): Dp {
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    return with(density) {
+        val windowWidthPx = LocalWindowInfo.current.containerSize.width
+        if (windowWidthPx > 0) {
+            windowWidthPx.toDp()
+        } else {
+            configuration.screenWidthDp.dp
         }
     }
 }

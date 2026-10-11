@@ -109,6 +109,7 @@ Draft for Play Console (**mobileRelease** version code **11**, **automotiveRelea
 ### Mobile (version code 11)
 
 - Single **Browse** tab with Artists / Albums toggle (compact landscape row; shuffle on that row in landscape)
+- Full-width now playing sheet in landscape; stable artwork sizing while dragging the sheet
 
 ### Automotive (version code 1000011)
 
