@@ -56,6 +56,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.core.content.pm.PackageInfoCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -82,11 +83,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+enum class BrowseMode {
+    Artists,
+    Albums
+}
+
 // Navigation Screens
 sealed class Screen {
     object Setup : Screen()
-    object Artists : Screen()
-    object AllAlbums : Screen()
+    object Browse : Screen()
     object RecentlyAdded : Screen()
     object Playlists : Screen()
     object Settings : Screen()
@@ -127,6 +132,9 @@ class PlexoraViewModel : ViewModel() {
 
     private val _currentScreen = MutableStateFlow<Screen>(Screen.Setup)
     val currentScreen: StateFlow<Screen> = _currentScreen.asStateFlow()
+
+    private val _browseMode = MutableStateFlow(BrowseMode.Artists)
+    val browseMode: StateFlow<BrowseMode> = _browseMode.asStateFlow()
 
     private val navigationBackStack = ArrayDeque<Screen>()
 
@@ -175,8 +183,7 @@ class PlexoraViewModel : ViewModel() {
         libraryCache = LibraryQueryCache(context.applicationContext)
         plexClient.clearIncompleteSetup()
         if (plexClient.isConfigured()) {
-            _currentScreen.value = Screen.Artists
-            loadArtists()
+            loadBrowse(BrowseMode.Artists)
         } else {
             _uiState.value = PlexUiState.ConfigNeeded
         }
@@ -290,20 +297,40 @@ class PlexoraViewModel : ViewModel() {
             libraryCache.clearAll()
         }
         clearNavigationBackStack()
-        _currentScreen.value = Screen.Artists
-        loadArtists()
+        loadBrowse(BrowseMode.Artists)
     }
 
-    fun loadArtists() {
-        clearNavigationBackStack()
-        _currentScreen.value = Screen.Artists
-        refreshArtists()
+    fun isBrowseSectionActive(): Boolean {
+        return when (val screen = _currentScreen.value) {
+            is Screen.Browse, is Screen.ArtistAlbums -> true
+            is Screen.AlbumTracks -> navigationBackStack.any {
+                it is Screen.Browse || it is Screen.ArtistAlbums
+            }
+            else -> false
+        }
     }
 
-    fun loadAllAlbums() {
+    fun loadBrowse(mode: BrowseMode = _browseMode.value) {
         clearNavigationBackStack()
-        _currentScreen.value = Screen.AllAlbums
-        refreshAllAlbums()
+        _browseMode.value = mode
+        _currentScreen.value = Screen.Browse
+        when (mode) {
+            BrowseMode.Artists -> refreshArtists()
+            BrowseMode.Albums -> refreshAllAlbums()
+        }
+    }
+
+    fun setBrowseMode(mode: BrowseMode) {
+        if (_browseMode.value == mode && _currentScreen.value is Screen.Browse) {
+            return
+        }
+        _browseMode.value = mode
+        if (_currentScreen.value is Screen.Browse) {
+            when (mode) {
+                BrowseMode.Artists -> refreshArtists()
+                BrowseMode.Albums -> refreshAllAlbums()
+            }
+        }
     }
 
     fun loadRecentlyAdded() {
@@ -626,8 +653,10 @@ class PlexoraViewModel : ViewModel() {
                 albumTracksStates.clear()
                 playlistTracksStates.clear()
                 when (_currentScreen.value) {
-                    is Screen.Artists -> refreshArtists()
-                    is Screen.AllAlbums -> refreshAllAlbums()
+                    is Screen.Browse -> when (_browseMode.value) {
+                        BrowseMode.Artists -> refreshArtists()
+                        BrowseMode.Albums -> refreshAllAlbums()
+                    }
                     is Screen.RecentlyAdded -> refreshRecentlyAdded()
                     is Screen.Playlists -> refreshPlaylists()
                     else -> {}
@@ -822,6 +851,7 @@ class MainActivity : ComponentActivity() {
 fun MainScreenContent(viewModel: PlexoraViewModel) {
     val context = LocalContext.current
     val currentScreen by viewModel.currentScreen.collectAsStateWithLifecycle()
+    val browseMode by viewModel.browseMode.collectAsStateWithLifecycle()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val artistsState by viewModel.artistsState.collectAsStateWithLifecycle()
     val allAlbumsState by viewModel.allAlbumsState.collectAsStateWithLifecycle()
@@ -865,16 +895,10 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                 ) {
                     Spacer(Modifier.weight(1f))
                     PlexNavigationRailItem(
-                        selected = currentScreen is Screen.Artists,
-                        onClick = { viewModel.loadArtists() },
-                        icon = Icons.Default.Person,
-                        label = "Artists"
-                    )
-                    PlexNavigationRailItem(
-                        selected = currentScreen is Screen.AllAlbums,
-                        onClick = { viewModel.loadAllAlbums() },
-                        icon = Icons.Default.Album,
-                        label = "Albums"
+                        selected = viewModel.isBrowseSectionActive(),
+                        onClick = { viewModel.loadBrowse() },
+                        icon = Icons.Default.Explore,
+                        label = "Browse"
                     )
                     PlexNavigationRailItem(
                         selected = currentScreen is Screen.RecentlyAdded,
@@ -903,7 +927,9 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                 if (currentScreen != Screen.Setup) {
                     if (isLandscape) {
                         CompactBrowseTopBar(
+                            modifier = Modifier.zIndex(1f),
                             currentScreen = currentScreen,
+                            browseMode = browseMode,
                             artistsState = artistsState,
                             allAlbumsState = allAlbumsState,
                             recentAlbumsState = recentAlbumsState,
@@ -918,6 +944,7 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                             actions = {
                                 BrowseTopBarActions(
                                     currentScreen = currentScreen,
+                                    browseMode = browseMode,
                                     artistsState = artistsState,
                                     allAlbumsState = allAlbumsState,
                                     recentAlbumsState = recentAlbumsState,
@@ -937,40 +964,31 @@ fun MainScreenContent(viewModel: PlexoraViewModel) {
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .fillMaxHeight()
+                        .zIndex(0f)
                 ) {
                     when (currentScreen) {
                         is Screen.Setup -> SetupScreen(
                             viewModel,
                             modifier = Modifier.fillMaxSize()
                         )
-                        is Screen.Artists -> {
-                            when {
-                                artistsState.error != null && artistsState.data.asStaleCacheData() == null ->
-                                    ErrorView(artistsState.error!!) { viewModel.loadArtists() }
-                                artistsState.showTabLoading() -> CircularLoading()
-                                artistsState.data != null -> ArtistsGrid(
-                                    artistsState.data!!,
-                                    state = artistsGridState
-                                ) { artist ->
+                        is Screen.Browse -> {
+                            BrowseScreen(
+                                browseMode = browseMode,
+                                onBrowseModeChange = viewModel::setBrowseMode,
+                                artistsState = artistsState,
+                                allAlbumsState = allAlbumsState,
+                                artistsGridState = artistsGridState,
+                                allAlbumsGridState = allAlbumsGridState,
+                                onArtistClick = { artist ->
                                     viewModel.navigateTo(Screen.ArtistAlbums(artist))
-                                }
-                                else -> CircularLoading()
-                            }
-                        }
-                        is Screen.AllAlbums -> {
-                            when {
-                                allAlbumsState.error != null && allAlbumsState.data.asStaleCacheData() == null ->
-                                    ErrorView(allAlbumsState.error!!) { viewModel.loadAllAlbums() }
-                                allAlbumsState.showTabLoading() -> CircularLoading()
-                                allAlbumsState.data != null -> AlbumsGrid(
-                                    allAlbumsState.data!!,
-                                    state = allAlbumsGridState
-                                ) { album ->
+                                },
+                                onAlbumClick = { album ->
                                     viewModel.navigateTo(Screen.AlbumTracks(album))
-                                }
-                                else -> CircularLoading()
-                            }
+                                },
+                                onRetryArtists = { viewModel.loadBrowse(BrowseMode.Artists) },
+                                onRetryAlbums = { viewModel.loadBrowse(BrowseMode.Albums) },
+                                onShuffleLibrary = { viewModel.shuffleLibrary() }
+                            )
                         }
                         is Screen.RecentlyAdded -> {
                             when {
@@ -1444,7 +1462,9 @@ private fun PlexNavigationRailItem(
 
 @Composable
 private fun CompactBrowseTopBar(
+    modifier: Modifier = Modifier,
     currentScreen: Screen,
+    browseMode: BrowseMode,
     artistsState: CachedResource<List<PlexArtist>>,
     allAlbumsState: CachedResource<List<PlexAlbum>>,
     recentAlbumsState: CachedResource<List<PlexAlbum>>,
@@ -1453,7 +1473,7 @@ private fun CompactBrowseTopBar(
 ) {
     Surface(
         color = browseTopBarColor,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(44.dp)
     ) {
@@ -1468,6 +1488,7 @@ private fun CompactBrowseTopBar(
             }
             BrowseTopBarActions(
                 currentScreen = currentScreen,
+                browseMode = browseMode,
                 artistsState = artistsState,
                 allAlbumsState = allAlbumsState,
                 recentAlbumsState = recentAlbumsState,
@@ -1482,6 +1503,7 @@ private fun CompactBrowseTopBar(
 @Composable
 private fun BrowseTopBarActions(
     currentScreen: Screen,
+    browseMode: BrowseMode,
     artistsState: CachedResource<List<PlexArtist>>,
     allAlbumsState: CachedResource<List<PlexAlbum>>,
     recentAlbumsState: CachedResource<List<PlexAlbum>>,
@@ -1489,9 +1511,14 @@ private fun BrowseTopBarActions(
     viewModel: PlexoraViewModel,
     compact: Boolean = false
 ) {
+    if (compact && currentScreen is Screen.Browse) {
+        return
+    }
     val tabRefreshing = when (currentScreen) {
-        is Screen.Artists -> artistsState.isRefreshing
-        is Screen.AllAlbums -> allAlbumsState.isRefreshing
+        is Screen.Browse -> when (browseMode) {
+            BrowseMode.Artists -> artistsState.isRefreshing
+            BrowseMode.Albums -> allAlbumsState.isRefreshing
+        }
         is Screen.RecentlyAdded -> recentAlbumsState.isRefreshing
         is Screen.Playlists -> playlistsState.isRefreshing
         else -> false
@@ -1533,8 +1560,7 @@ private fun BrowseTopAppBarTitle(currentScreen: Screen) {
     val isLandscape =
         LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val sectionTitle = when (currentScreen) {
-        is Screen.Artists -> "Artists"
-        is Screen.AllAlbums -> "Albums"
+        is Screen.Browse -> "Browse"
         is Screen.RecentlyAdded -> "Recently Added"
         is Screen.Playlists -> "Playlists"
         is Screen.Settings -> "Settings"
@@ -1589,6 +1615,183 @@ private fun BrowseTopAppBarTitle(currentScreen: Screen) {
             color = gold,
             letterSpacing = 2.sp
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BrowseModeToggle(
+    browseMode: BrowseMode,
+    onBrowseModeChange: (BrowseMode) -> Unit,
+    compact: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val gold = Color(0xFFFFE5A93B)
+    val trackColor = Color(0xFF2A2A30)
+    val height = if (compact) 26.dp else 32.dp
+    val fontSize = if (compact) 12.sp else 13.sp
+    val horizontalPadding = if (compact) 10.dp else 14.dp
+    val pillShape = RoundedCornerShape(height / 2)
+    Row(
+        modifier = modifier
+            .wrapContentWidth()
+            .height(height)
+            .background(trackColor, pillShape),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        BrowseModeToggleSegment(
+            label = "Artists",
+            selected = browseMode == BrowseMode.Artists,
+            onClick = { onBrowseModeChange(BrowseMode.Artists) },
+            gold = gold,
+            fontSize = fontSize,
+            horizontalPadding = horizontalPadding,
+            height = height,
+            cornerShape = RoundedCornerShape(
+                topStart = height / 2,
+                bottomStart = height / 2,
+                topEnd = 4.dp,
+                bottomEnd = 4.dp
+            )
+        )
+        BrowseModeToggleSegment(
+            label = "Albums",
+            selected = browseMode == BrowseMode.Albums,
+            onClick = { onBrowseModeChange(BrowseMode.Albums) },
+            gold = gold,
+            fontSize = fontSize,
+            horizontalPadding = horizontalPadding,
+            height = height,
+            cornerShape = RoundedCornerShape(
+                topStart = 4.dp,
+                bottomStart = 4.dp,
+                topEnd = height / 2,
+                bottomEnd = height / 2
+            )
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BrowseModeToggleSegment(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    gold: Color,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    horizontalPadding: Dp,
+    height: Dp,
+    cornerShape: RoundedCornerShape,
+) {
+    val bg = if (selected) gold.copy(alpha = 0.28f) else Color.Transparent
+    val textColor = if (selected) gold else Color(0xFFB0B0B8)
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.height(height),
+        shape = cornerShape,
+        color = bg,
+        contentColor = textColor,
+    ) {
+        Box(
+            modifier = Modifier.padding(horizontal = horizontalPadding),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = label,
+                fontSize = fontSize,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+@Composable
+private fun BrowseScreen(
+    browseMode: BrowseMode,
+    onBrowseModeChange: (BrowseMode) -> Unit,
+    artistsState: CachedResource<List<PlexArtist>>,
+    allAlbumsState: CachedResource<List<PlexAlbum>>,
+    artistsGridState: LazyGridState,
+    allAlbumsGridState: LazyGridState,
+    onArtistClick: (PlexArtist) -> Unit,
+    onAlbumClick: (PlexAlbum) -> Unit,
+    onRetryArtists: () -> Unit,
+    onRetryAlbums: () -> Unit,
+    onShuffleLibrary: () -> Unit,
+) {
+    val isLandscape =
+        LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val tabRefreshing = when (browseMode) {
+        BrowseMode.Artists -> artistsState.isRefreshing
+        BrowseMode.Albums -> allAlbumsState.isRefreshing
+    }
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = 16.dp,
+                    vertical = if (isLandscape) 2.dp else 4.dp
+                ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BrowseModeToggle(
+                browseMode = browseMode,
+                onBrowseModeChange = onBrowseModeChange,
+                compact = isLandscape
+            )
+            if (isLandscape) {
+                Spacer(Modifier.weight(1f))
+                if (tabRefreshing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .padding(end = 4.dp)
+                            .size(18.dp),
+                        color = Color(0xFFFFE5A93B),
+                        strokeWidth = 2.dp
+                    )
+                }
+                IconButton(
+                    onClick = onShuffleLibrary,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Shuffle,
+                        contentDescription = "Shuffle library",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+        }
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            when (browseMode) {
+                BrowseMode.Artists -> when {
+                    artistsState.error != null && artistsState.data.asStaleCacheData() == null ->
+                        ErrorView(artistsState.error!!, onRetryArtists)
+                    artistsState.showTabLoading() -> CircularLoading()
+                    artistsState.data != null -> ArtistsGrid(
+                        artistsState.data!!,
+                        state = artistsGridState,
+                        onClick = onArtistClick,
+                    )
+                    else -> CircularLoading()
+                }
+                BrowseMode.Albums -> when {
+                    allAlbumsState.error != null && allAlbumsState.data.asStaleCacheData() == null ->
+                        ErrorView(allAlbumsState.error!!, onRetryAlbums)
+                    allAlbumsState.showTabLoading() -> CircularLoading()
+                    allAlbumsState.data != null -> AlbumsGrid(
+                        allAlbumsState.data!!,
+                        state = allAlbumsGridState,
+                        onClick = onAlbumClick,
+                    )
+                    else -> CircularLoading()
+                }
+            }
+        }
     }
 }
 

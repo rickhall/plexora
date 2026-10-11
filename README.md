@@ -54,8 +54,8 @@ Version codes: mobile uses `appVersionCode`; automotive adds `1_000_000`.
 
 | Flavor | `versionCode` | `versionName` | `targetSdk` |
 |--------|---------------|---------------|-------------|
-| **mobile** | 10 | 1.0 | 36 (Play phone/tablet updates) |
-| **automotive** | 1000010 | 1.0 | 35 (AAOS) |
+| **mobile** | 11 | 1.0 | 36 (Play phone/tablet updates) |
+| **automotive** | 1000011 | 1.0 | 35 (AAOS) |
 
 ### Google Play target API levels
 
@@ -101,6 +101,18 @@ Help: [Prepare your app for review (sign-in details)](https://support.google.com
 Movies-only or empty servers fail at music library selection—reviewers need a server with a Plex **Music** library.
 
 Playback from an album or playlist queues remaining tracks in order (or shuffled via Shuffle items). Large libraries are loaded in pages so artists and albums beyond the first screen remain browsable.
+
+## Release notes (version 11)
+
+Draft for Play Console (**mobileRelease** version code **11**, **automotiveRelease** **1000011**). More items expected before ship.
+
+### Mobile (version code 11)
+
+- Single **Browse** tab with Artists / Albums toggle (compact landscape row; shuffle on that row in landscape)
+
+### Automotive (version code 1000011)
+
+- Shared library/playback changes only if applicable; AAOS browse UI unchanged unless noted before release
 
 ## Release notes (version 10)
 
