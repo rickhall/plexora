@@ -4,12 +4,16 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Solid Stylized P in Plex Gold (Centered for Safe Zone) -->
-    <path
-        android:fillColor="#E5A93B"
-        android:pathData="M22,33h18c9,0 16,5 16,14s-7,14 -16,14h-7v14h-11v-42z" />
-    <!-- Symmetrical Play Button in Plex Gold (Centered for Safe Zone) -->
-    <path
-        android:fillColor="#E5A93B"
-        android:pathData="M58,33l28,21l-28,21z" />
+    <!-- Concept J; nudged to center mark in adaptive icon (was heavy left / low in 108 viewport) -->
+    <group
+        android:translateX="16"
+        android:translateY="0">
+        <path
+            android:fillColor="#E5A93B"
+            android:fillType="evenOdd"
+            android:pathData="M22,33h18c11,0 21,8 21,17s-9,17 -21,17h-7v10h-11v-44z M33,38 L33,62 L57,50 Z"
+            android:strokeColor="#E5A93B"
+            android:strokeWidth="2.5"
+            android:strokeLineJoin="round" />
+    </group>
 </vector>
