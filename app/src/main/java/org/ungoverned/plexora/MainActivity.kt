@@ -187,6 +187,7 @@ class PlexoraViewModel : ViewModel() {
 
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private lateinit var plexClient: PlexClient
+    private var hasBootstrapped = false
 
     private val handler = Handler(Looper.getMainLooper())
     private val progressUpdater = object : Runnable {
@@ -206,6 +207,8 @@ class PlexoraViewModel : ViewModel() {
         libraryCache = LibraryQueryCache(context.applicationContext)
         _albumDurationsMs.value = libraryCache.getAllAlbumDurations()
         _browseGridTileSize.value = loadBrowseGridTileSize(context)
+        if (hasBootstrapped) return
+        hasBootstrapped = true
         plexClient.clearIncompleteSetup()
         if (plexClient.isConfigured()) {
             loadBrowse(BrowseMode.Artists)
