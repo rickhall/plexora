@@ -68,6 +68,8 @@ data class PlexTrack(
     val thumbUrl: String?,
     val parentRatingKey: String = "",
     val grandparentRatingKey: String = "",
+    /** Present on items returned from Plex play queues; used to page the queue window. */
+    val playQueueItemId: String = "",
 )
 
 data class PlexTrackResponse(
@@ -82,7 +84,8 @@ data class PlexPagedList<T>(
 
 data class PlexPlayQueue(
     val id: String,
-    val tracks: List<PlexTrack>
+    val tracks: List<PlexTrack>,
+    val totalCount: Int = tracks.size,
 )
 
 class PlexClient(private val context: Context) {
@@ -857,9 +860,41 @@ class PlexClient(private val context: Context) {
         return createPlayQueue(sourceUri)
     }
 
-    fun getPlayQueue(playQueueId: String): PlexPlayQueue? {
-        val jsonStr = executeGetRequest(buildUrl("/playQueues/$playQueueId", mapOf("window" to "50"))) ?: return null
+    fun getPlayQueue(
+        playQueueId: String,
+        centerPlayQueueItemId: String? = null,
+        window: Int = 50,
+        includeBefore: Boolean = true,
+        includeAfter: Boolean = true,
+    ): PlexPlayQueue? {
+        val params = linkedMapOf(
+            "window" to window.toString(),
+            "includeBefore" to if (includeBefore) "1" else "0",
+            "includeAfter" to if (includeAfter) "1" else "0",
+        )
+        if (!centerPlayQueueItemId.isNullOrBlank()) {
+            params["center"] = centerPlayQueueItemId
+        }
+        val jsonStr = executeGetRequest(buildUrl("/playQueues/$playQueueId", params)) ?: return null
         return parsePlayQueue(jsonStr)
+    }
+
+    /** Load a larger slice of an existing play queue for shuffle / long sessions. */
+    fun expandPlayQueueWindow(playQueue: PlexPlayQueue, window: Int = 120): PlexPlayQueue {
+        val center = playQueue.tracks.firstOrNull()?.playQueueItemId?.takeIf { it.isNotEmpty() }
+            ?: return playQueue
+        val expanded = getPlayQueue(
+            playQueueId = playQueue.id,
+            centerPlayQueueItemId = center,
+            window = window,
+            includeBefore = false,
+            includeAfter = true,
+        ) ?: return playQueue
+        val merged = (playQueue.tracks + expanded.tracks).distinctBy { it.ratingKey }
+        return playQueue.copy(
+            tracks = merged,
+            totalCount = maxOf(playQueue.totalCount, expanded.totalCount, merged.size),
+        )
     }
 
     private fun parsePlayQueue(jsonStr: String): PlexPlayQueue? {
@@ -868,9 +903,10 @@ class PlexClient(private val context: Context) {
             val container = root.optJSONObject("MediaContainer") ?: return null
             val id = container.optString("playQueueID")
             val tracks = parseTracksFromContainer(container)
+            val totalCount = container.optInt("playQueueTotalCount", tracks.size)
 
             if (id.isNotEmpty() && tracks.isNotEmpty()) {
-                return PlexPlayQueue(id, tracks)
+                return PlexPlayQueue(id, tracks, totalCount)
             }
         } catch (e: Exception) {
             Log.e(tag, "Error parsing play queue JSON", e)
@@ -894,19 +930,67 @@ class PlexClient(private val context: Context) {
                     PlexTrack(
                         ratingKey = obj.getString("ratingKey"),
                         title = obj.getString("title"),
-                        artistTitle = obj.optString("grandparentTitle", obj.optString("parentTitle", "Unknown Artist")),
-                        albumTitle = obj.optString("parentTitle", "Unknown Album"),
+                        artistTitle = obj.optString("grandparentTitle", ""),
+                        albumTitle = obj.optString("parentTitle", ""),
                         index = obj.optInt("index", i + 1),
                         durationMs = obj.optLong("duration", 0L),
                         streamUrl = streamUrl,
                         thumbUrl = getImageUrl(thumbPath),
                         parentRatingKey = obj.optString("parentRatingKey", ""),
                         grandparentRatingKey = obj.optString("grandparentRatingKey", ""),
+                        playQueueItemId = obj.optString("playQueueItemID", ""),
                     )
                 )
             }
         }
         return tracks
+    }
+
+    fun resolveTrackForPlayback(track: PlexTrack): ResolvedTrackPlayback {
+        var current = track
+        if (trackNeedsDetailEnrichment(current)) {
+            getTrack(current.ratingKey)?.let { current = mergePlaybackTrack(current, it) }
+        }
+        var releaseYear = 0
+        val albumKey = current.parentRatingKey
+        if (albumKey.isNotEmpty()) {
+            getAlbum(albumKey)?.let { album ->
+                releaseYear = album.year
+                current = current.copy(
+                    albumTitle = current.albumTitle.usableMetadataLine() ?: album.title,
+                    artistTitle = current.artistTitle.usableMetadataLine() ?: album.artistTitle,
+                    thumbUrl = current.thumbUrl ?: album.thumbUrl,
+                    grandparentRatingKey = current.grandparentRatingKey.ifEmpty { album.artistRatingKey },
+                )
+            }
+        }
+        if (current.artistTitle.isBlank() && current.grandparentRatingKey.isNotEmpty()) {
+            getArtist(current.grandparentRatingKey)?.let { artist ->
+                current = current.copy(artistTitle = artist.title)
+            }
+        }
+        return ResolvedTrackPlayback(current, releaseYear)
+    }
+
+    private fun trackNeedsDetailEnrichment(track: PlexTrack): Boolean {
+        if (track.parentRatingKey.isEmpty()) return true
+        if (track.artistTitle.usableMetadataLine() == null) return true
+        if (track.albumTitle.usableMetadataLine() == null) return true
+        return false
+    }
+
+    private fun mergePlaybackTrack(primary: PlexTrack, detail: PlexTrack): PlexTrack {
+        return primary.copy(
+            title = primary.title.ifBlank { detail.title },
+            artistTitle = primary.artistTitle.usableMetadataLine() ?: detail.artistTitle,
+            albumTitle = primary.albumTitle.usableMetadataLine() ?: detail.albumTitle,
+            durationMs = if (primary.durationMs > 0L) primary.durationMs else detail.durationMs,
+            streamUrl = primary.streamUrl.ifBlank { detail.streamUrl },
+            thumbUrl = primary.thumbUrl ?: detail.thumbUrl,
+            parentRatingKey = primary.parentRatingKey.ifEmpty { detail.parentRatingKey },
+            grandparentRatingKey = primary.grandparentRatingKey.ifEmpty { detail.grandparentRatingKey },
+            playQueueItemId = primary.playQueueItemId.ifEmpty { detail.playQueueItemId },
+        )
     }
 
     fun findBestConnection(server: PlexServer): String? {

@@ -140,29 +140,10 @@ object AutomotiveBrowseItems {
         )
     }
 
-    fun trackItem(context: Context, track: PlexTrack): MediaItem {
-        val streamUri = Uri.parse(track.streamUrl)
-        return MediaItem.Builder()
-            .setMediaId("track_${track.ratingKey}")
-            .setUri(streamUri)
-            .setRequestMetadata(
-                MediaItem.RequestMetadata.Builder()
-                    .setMediaUri(streamUri)
-                    .build()
-            )
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(track.title)
-                    .setArtist(track.artistTitle)
-                    .setAlbumTitle(track.albumTitle)
-                    .setIsPlayable(true)
-                    .setIsBrowsable(false)
-                    .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
-                    .apply {
-                        ArtworkUris.forPlexUrl(context, track.thumbUrl)?.let { setArtworkUri(it) }
-                    }
-                    .build()
-            )
-            .build()
-    }
+    fun trackItem(
+        context: Context,
+        track: PlexTrack,
+        releaseYear: Int = 0,
+        durationOverrideMs: Long = 0L,
+    ): MediaItem = PlaybackMetadata.trackMediaItem(context, track, releaseYear, durationOverrideMs)
 }

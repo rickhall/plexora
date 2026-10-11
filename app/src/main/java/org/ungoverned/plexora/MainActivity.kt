@@ -134,6 +134,7 @@ class PlexoraViewModel : ViewModel() {
     val uiState: StateFlow<PlexUiState> = _uiState.asStateFlow()
 
     private lateinit var libraryCache: LibraryQueryCache
+    private lateinit var appContext: Context
 
     private val _artistsState = MutableStateFlow(CachedResource<List<PlexArtist>>())
     val artistsState: StateFlow<CachedResource<List<PlexArtist>>> = _artistsState.asStateFlow()
@@ -211,6 +212,7 @@ class PlexoraViewModel : ViewModel() {
     }
 
     fun init(context: Context) {
+        appContext = context.applicationContext
         plexClient = PlexClient(context)
         libraryCache = LibraryQueryCache(context.applicationContext)
         _albumDurationsMs.value = libraryCache.getAllAlbumDurations()
@@ -229,6 +231,7 @@ class PlexoraViewModel : ViewModel() {
     }
 
     fun initForAutomotiveSignIn(context: Context) {
+        appContext = context.applicationContext
         plexClient = PlexClient(context)
         libraryCache = LibraryQueryCache(context.applicationContext)
         _albumDurationsMs.value = libraryCache.getAllAlbumDurations()
@@ -239,6 +242,7 @@ class PlexoraViewModel : ViewModel() {
     }
 
     fun initForAutomotiveSettings(context: Context) {
+        appContext = context.applicationContext
         plexClient = PlexClient(context)
         libraryCache = LibraryQueryCache(context.applicationContext)
         _albumDurationsMs.value = libraryCache.getAllAlbumDurations()
@@ -801,7 +805,7 @@ class PlexoraViewModel : ViewModel() {
     fun shuffleLibrary() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val playQueue = plexClient.createLibraryPlayQueue()
+                val playQueue = plexClient.createLibraryPlayQueue()?.let { plexClient.expandPlayQueueWindow(it) }
                 if (playQueue != null && playQueue.tracks.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
                         playTracks(playQueue.tracks, 0, shuffle = true, playQueueId = playQueue.id)
@@ -817,6 +821,7 @@ class PlexoraViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val playQueue = plexClient.createPlayQueue(sourceUri, shuffle = true)
+                    ?.let { plexClient.expandPlayQueueWindow(it) }
                 if (playQueue != null && playQueue.tracks.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
                         playTracks(playQueue.tracks, 0, shuffle = true, playQueueId = playQueue.id)
@@ -965,30 +970,7 @@ class PlexoraViewModel : ViewModel() {
         val listToPlay = if (shuffle && playQueueId == null) tracks.shuffled() else tracks
 
         val mediaItems = listToPlay.map { track ->
-            val streamUri = Uri.parse(track.streamUrl)
-            MediaItem.Builder()
-                .setMediaId("track_${track.ratingKey}")
-                .setUri(streamUri)
-                .setRequestMetadata(
-                    MediaItem.RequestMetadata.Builder()
-                        .setMediaUri(streamUri)
-                        .build()
-                )
-                .setMediaMetadata(
-                    MediaMetadata.Builder()
-                        .setTitle(track.title)
-                        .setArtist(track.artistTitle)
-                        .setAlbumTitle(track.albumTitle)
-                        .setFolderType(MediaMetadata.FOLDER_TYPE_NONE)
-                        .setIsPlayable(true)
-                        .setIsBrowsable(false)
-                        .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
-                        .apply {
-                            track.thumbUrl?.let { setArtworkUri(Uri.parse(it)) }
-                        }
-                        .build()
-                )
-                .build()
+            PlaybackMetadata.trackMediaItem(appContext, track)
         }
 
         controller.setMediaItems(mediaItems, safeStart, 0L)

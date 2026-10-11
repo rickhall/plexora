@@ -42,6 +42,9 @@ class PlexMediaLibraryService : MediaLibraryService() {
     @Volatile
     private var lastBrowseParentId: String? = null
 
+    @Volatile
+    private var lastEnrichedNowPlayingMediaId: String? = null
+
     private val libraryStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -83,7 +86,8 @@ class PlexMediaLibraryService : MediaLibraryService() {
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
-        
+        player.repeatMode = Player.REPEAT_MODE_OFF
+
         player.addListener(object : androidx.media3.common.Player.Listener {
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 android.util.Log.e("PlexMediaService", "Player Error: ${error.message}", error)
@@ -101,11 +105,13 @@ class PlexMediaLibraryService : MediaLibraryService() {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 savePlaybackState()
                 checkAndRefillQueue()
+                enrichCurrentTrackMetadata()
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == androidx.media3.common.Player.STATE_READY) {
                     savePlaybackState()
+                    enrichCurrentTrackMetadata(durationOnly = true)
                 }
             }
         })
@@ -159,27 +165,44 @@ class PlexMediaLibraryService : MediaLibraryService() {
         val playQueueId = currentPlayQueueId ?: return
         val currentIndex = player.currentMediaItemIndex
         val totalCount = player.mediaItemCount
-        
-        // If we're within 10 tracks of the end, fetch more
-        if (totalCount - currentIndex < 10) {
-            scope.launch(Dispatchers.IO) {
-                try {
-                    val nextQueue = plexClient.getPlayQueue(playQueueId)
-                    if (nextQueue != null) {
-                        val existingIds = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }.toSet()
-                        val newItems = nextQueue.tracks
-                            .map { createMediaItem(it) }
-                            .filter { it.mediaId !in existingIds }
-                        
-                        if (newItems.isNotEmpty()) {
-                            withContext(Dispatchers.Main) {
-                                player.addMediaItems(newItems)
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.e("PlexMediaService", "Failed to refill queue", e)
+        if (currentIndex < 0 || totalCount - currentIndex > 12) return
+
+        val centerId = player.getMediaItemAt(currentIndex).mediaMetadata.extras
+            ?.getString(PlaybackTrackExtras.PLAY_QUEUE_ITEM_ID)
+            ?.takeIf { it.isNotBlank() }
+        if (centerId == null) {
+            android.util.Log.w(
+                "PlexMediaService",
+                "Play queue refill skipped: missing playQueueItemID on ${player.currentMediaItem?.mediaId}"
+            )
+            return
+        }
+
+        scope.launch {
+            try {
+                val slice = withContext(Dispatchers.IO) {
+                    plexClient.getPlayQueue(
+                        playQueueId = playQueueId,
+                        centerPlayQueueItemId = centerId,
+                        window = 100,
+                        includeBefore = false,
+                        includeAfter = true,
+                    )
+                } ?: return@launch
+                if (player.currentMediaItemIndex != currentIndex) return@launch
+                val existingIds = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }.toSet()
+                val newItems = slice.tracks
+                    .map { createMediaItem(it) }
+                    .filter { it.mediaId !in existingIds }
+                if (newItems.isNotEmpty()) {
+                    player.addMediaItems(newItems)
+                    android.util.Log.d(
+                        "PlexMediaService",
+                        "Play queue refill +${newItems.size} tracks (have=${player.mediaItemCount}, plexTotal=${slice.totalCount})"
+                    )
                 }
+            } catch (e: Exception) {
+                android.util.Log.e("PlexMediaService", "Failed to refill queue", e)
             }
         }
     }
@@ -231,10 +254,62 @@ class PlexMediaLibraryService : MediaLibraryService() {
         return AutomotiveBrowseItems.trackItem(this, track)
     }
 
+    private fun enrichCurrentTrackMetadata(durationOnly: Boolean = false) {
+        val index = player.currentMediaItemIndex
+        if (index < 0 || index >= player.mediaItemCount) return
+        val seedItem = player.getMediaItemAt(index)
+        val seedTrack = PlaybackMetadata.trackFromMediaItem(seedItem) ?: return
+        if (durationOnly) {
+            if (player.duration <= 0L) return
+            if ((seedItem.mediaMetadata.durationMs ?: 0L) >= player.duration) return
+        } else if (seedItem.mediaId == lastEnrichedNowPlayingMediaId && nowPlayingMetadataLooksComplete(seedItem)) {
+            return
+        }
+        scope.launch {
+            try {
+                val resolved = if (durationOnly) {
+                    ResolvedTrackPlayback(seedTrack)
+                } else {
+                    withContext(Dispatchers.IO) {
+                        plexClient.resolveTrackForPlayback(seedTrack)
+                    }
+                }
+                if (player.currentMediaItemIndex != index) return@launch
+                val track = resolved.track.copy(
+                    playQueueItemId = resolved.track.playQueueItemId.ifEmpty { seedTrack.playQueueItemId },
+                )
+                val playerDuration = player.duration.coerceAtLeast(0L)
+                val durationOverride = when {
+                    playerDuration > 0L -> playerDuration
+                    track.durationMs > 0L -> track.durationMs
+                    else -> 0L
+                }
+                val updated = AutomotiveBrowseItems.trackItem(
+                    this@PlexMediaLibraryService,
+                    track,
+                    releaseYear = resolved.releaseYear,
+                    durationOverrideMs = durationOverride,
+                )
+                if (updated.mediaMetadata == seedItem.mediaMetadata) return@launch
+                player.replaceMediaItem(index, updated)
+                lastEnrichedNowPlayingMediaId = updated.mediaId
+            } catch (e: Exception) {
+                android.util.Log.w("PlexMediaService", "Failed to enrich now playing metadata", e)
+            }
+        }
+    }
+
+    private fun nowPlayingMetadataLooksComplete(item: MediaItem): Boolean {
+        val md = item.mediaMetadata
+        val artist = md.artist?.toString()?.usableMetadataLine() != null
+        val album = md.albumTitle?.toString()?.usableMetadataLine() != null
+        return artist && album
+    }
+
     private fun resolveShufflePlayQueue(mediaId: String): PlexPlayQueue? {
         val machineId = plexClient.getMachineId()
         if (machineId.isEmpty()) return null
-        return when {
+        val created = when {
             mediaId == AutomotiveBrowseItems.SHUFFLE_LIBRARY_ID ->
                 plexClient.createLibraryPlayQueue()
             mediaId == AutomotiveBrowseItems.SHUFFLE_ALL_ALBUMS_ID -> {
@@ -262,7 +337,8 @@ class PlexMediaLibraryService : MediaLibraryService() {
                 plexClient.createPlayQueue("library://$machineId/directory//playlists/$key/items")
             }
             else -> null
-        }
+        } ?: return null
+        return plexClient.expandPlayQueueWindow(created)
     }
 
     private fun applyPlaybackQueue(playQueueId: String, shuffle: Boolean) {
@@ -317,8 +393,9 @@ class PlexMediaLibraryService : MediaLibraryService() {
             startRatingKey = trackKey
         ) ?: return null
         applyPlaybackQueue(playQueue.id, shuffle)
-        val mediaItems = playQueue.tracks.map { createMediaItem(it) }
-        val startIndex = playQueue.tracks.indexOfFirst { it.ratingKey == trackKey }.let { if (it >= 0) it else 0 }
+        val expanded = plexClient.expandPlayQueueWindow(playQueue)
+        val mediaItems = expanded.tracks.map { createMediaItem(it) }
+        val startIndex = expanded.tracks.indexOfFirst { it.ratingKey == trackKey }.let { if (it >= 0) it else 0 }
         return MediaSession.MediaItemsWithStartPosition(mediaItems, startIndex, 0L)
     }
 
