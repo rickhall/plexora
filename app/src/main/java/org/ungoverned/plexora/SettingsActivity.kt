@@ -4,10 +4,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -17,11 +16,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -32,13 +29,7 @@ class SettingsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    primary = Color(0xFFFFE5A93B),
-                    background = Color(0xFF121214),
-                    surface = Color(0xFF1E1E24)
-                )
-            ) {
+            MaterialTheme(colorScheme = automotiveSettingsColorScheme()) {
                 val viewModel: PlexoraViewModel = viewModel()
                 val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
@@ -54,39 +45,40 @@ class SettingsActivity : ComponentActivity() {
 
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
+                    color = MaterialTheme.colorScheme.background,
                 ) {
                     Scaffold(
                         topBar = {
                             TopAppBar(
                                 title = {
                                     Text(
-                                        "PLEXORA",
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFFFFE5A93B),
-                                        letterSpacing = 2.sp
+                                        "Settings",
+                                        fontWeight = FontWeight.Medium,
+                                        fontSize = 24.sp,
                                     )
                                 },
                                 navigationIcon = {
                                     IconButton(onClick = { finish() }) {
                                         Icon(
-                                            Icons.Default.Close,
-                                            contentDescription = "Close",
-                                            tint = Color.White
+                                            Icons.AutoMirrored.Filled.ArrowBack,
+                                            contentDescription = "Back",
                                         )
                                     }
                                 },
                                 colors = TopAppBarDefaults.topAppBarColors(
-                                    containerColor = Color(0xFF121214)
-                                )
+                                    containerColor = MaterialTheme.colorScheme.background,
+                                    titleContentColor = MaterialTheme.colorScheme.onBackground,
+                                    navigationIconContentColor = MaterialTheme.colorScheme.onBackground,
+                                ),
                             )
-                        }
+                        },
+                        containerColor = MaterialTheme.colorScheme.background,
                     ) { padding ->
-                        SettingsScreen(
+                        AutomotiveSettingsScreen(
                             viewModel = viewModel,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(padding)
+                                .padding(padding),
                         )
                     }
                 }

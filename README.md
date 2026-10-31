@@ -1,155 +1,145 @@
 # Plexora
 
-Plexora is a modern, lightweight Plex music client for **Android Automotive OS** and **Android mobile**.
+Plexora is a Plex **music** client for Android phones, tablets, and in-vehicle systems.
 
-## Product flavors
+> **Looking for testers** — Plexora is under active development and I am especially looking for people who can exercise the **Android Automotive OS** build on real hardware (Ford **Digital Experience**, GM, Volvo, etc.). Emulators and the **Android Auto Desktop Head Unit (DHU)** do not reproduce OEM head-unit browse/playback UI; car feedback is invaluable. If you are interested, please **[open a GitHub issue](https://github.com/rickhall/plexora/issues/new)** or contact me via the channel linked on the [Play Store listing](https://play.google.com/store/apps/details?id=org.ungoverned.plexora) once you have the app installed.
 
-| Flavor | Target | UI |
-|--------|--------|-----|
-| **automotive** | Play Store / AAOS head units | System media browser and player (Media3 `MediaLibraryService`) |
-| **mobile** | Phones and tablets | Full Jetpack Compose app with launcher, browse, and immersive player |
+## Two Play Store releases, three user experiences
 
-On Ford, GM, and other AAOS vehicles, the **automotive** build appears in the vehicle's native media app — not as a standalone Compose launcher. Browsing, artwork, shuffle, and playback are driven by `PlexMediaLibraryService` and the host system's UI.
+Plexora ships as **two app bundles** from one codebase (Gradle product flavors). Depending on where you run it, you see one of **three** interfaces:
 
-The **mobile** flavor includes `MainActivity` with the custom Compose interface shown in the screenshots below.
+| User experience | What you use | Plexora build | Who draws browse & playback |
+|-----------------|--------------|---------------|-----------------------------|
+| **Mobile app** | Phone or tablet launcher | `mobile` AAB | **Plexora** — Jetpack Compose (`MainActivity`) |
+| **Android Auto** (projected) | Phone in the car; car shows Android Auto | `mobile` AAB (same install as mobile) | **Android Auto** on the car display; Plexora supplies media via `PlexMediaLibraryService` |
+| **Android Automotive OS** (built-in) | Native media app on an AAOS head unit (e.g. Ford Digital Experience) | `automotive` AAB | **The vehicle OEM** — Plexora exposes a Media3 `MediaLibraryService` browse tree and playback session |
+
+Shared backend logic (Plex API, play queues, artwork, auth) lives in the main source set; only manifests, some activities, and the mobile UI differ by flavor.
+
+**Automotive OS settings and setup** (`SettingsActivity`, `SignInActivity`) are simple full-screen flows Plexora provides when the host opens app preferences or when linking Plex is required. They are **not** the same UI as the OEM media browser — that is expected on AAOS.
 
 ## Features
 
-- **System media integration**: Media3 implementation for AAOS media center, steering wheel controls, and instrument cluster metadata.
-- **Expanded browse tree**: Artists, Albums, Recently Added, Playlists, plus contextual shuffle at each level.
-- **Artwork via ContentProvider**: Plex images are proxied as local `content://` URIs for AAOS compatibility.
-- **Contextual shuffle**: Library, artist, album, playlist, and section shuffles via Plex play queues.
-- **Search**: Artists, albums, and tracks via the system media search UI.
-- **Plex linking**: PIN auth at `plex.tv/link` through Sign In (automotive) or in-app setup (mobile).
+- **Plex linking** — PIN flow at [plex.tv/link](https://plex.tv/link); pick a server and **Music** library section.
+- **Browse** — Artists, albums, recently added, playlists; contextual shuffle at library, artist, album, and playlist levels (where the host UI exposes browse actions).
+- **Playback** — Queues from albums/playlists; shuffle; Media3 session for steering-wheel and cluster metadata where supported.
+- **Search** — Artists, albums, and tracks via system media search (automotive / Android Auto).
+- **Artwork** — `content://` artwork proxy on automotive for host compatibility; Coil on mobile.
+- **Mobile-only UI** — Unified Browse hub, now playing sheet, queue, track menus (album / artist), artist album sort (title or year), album duration badges, library cache, and related polish.
 
-## Screenshots (mobile flavor)
+## Screenshots (mobile app only)
 
-1. **Server Setup**  
-   ![Setup](screenshots/setup.png)  
-   *Linking a Plex server using the secure PIN-based authentication flow.*
+Automotive OS and Android Auto use the car’s media UI; screenshots below are the **mobile** Compose app.
 
-2. **Music Library**  
-   ![Library](screenshots/library.png)  
-   *Browsing the artist library in the mobile Compose UI.*
+1. **Server setup** — ![Setup](screenshots/setup.png)  
+2. **Music library** — ![Library](screenshots/library.png)  
+3. **Playlist & shuffle** — ![Playlist](screenshots/playlist.png)  
+4. **Now playing** — ![Player](screenshots/player.png)  
 
-3. **Playlist & Shuffle**  
-   ![Playlist](screenshots/playlist.png)  
-   *Playlist track list with contextual shuffle.*
-
-4. **Now Playing**  
-   ![Player](screenshots/player.png)  
-   *Immersive playback screen with large controls and blurred background artwork.*
-
-## Build
+## Build & release
 
 ```bash
-# Automotive (Play Store / AAOS)
+# Android Automotive OS (Play / AAOS track)
 ./gradlew bundleAutomotiveRelease
 
-# Mobile
+# Phones & tablets (includes Android Auto projection)
 ./gradlew bundleMobileRelease
 ```
 
-Version codes: mobile uses `appVersionCode`; automotive adds `1_000_000`.
+Version codes: **`mobile`** uses `appVersionCode` in `app/build.gradle.kts`; **`automotive`** adds `1_000_000`.
 
 | Flavor | `versionCode` | `versionName` | `targetSdk` |
 |--------|---------------|---------------|-------------|
-| **mobile** | 11 | 1.0 | 36 (Play phone/tablet updates) |
-| **automotive** | 1000011 | 1.0 | 35 (AAOS) |
+| **mobile** | 11 | 1.0 | 36 |
+| **automotive** | 1000011 | 1.0 | 35 |
 
-### Google Play target API levels
-
-Phone and tablet builds (**mobile**) must target **API 36+** for Play updates. **automotive** stays on **API 35**, which matches Android Automotive OS requirements. Both flavors share `compileSdk = 37` in Gradle; only `targetSdk` differs by flavor.
+**Target API:** Play requires **API 36+** for phone/tablet updates; **automotive** targets **API 35** per Android Automotive OS guidance. Both use `compileSdk = 37`.
 
 ### Signed release (Android Studio)
 
-1. Sync Gradle after any version bump (`appVersionCode` in `app/build.gradle.kts`).
-2. Select the **mobileRelease** or **automotiveRelease** build variant.
-3. **Build → Generate Signed App Bundle / APK** → **Android App Bundle**, sign with your Play upload keystore.
-4. Upload the `.aab` to Play Console (same app listing; use **Form factors** / dedicated **Android Automotive OS** track for `automotiveRelease` when configured).
+1. Bump `appVersionCode` / `appVersionName` in `app/build.gradle.kts` when cutting a release.
+2. Select **mobileRelease** or **automotiveRelease**.
+3. **Build → Generate Signed App Bundle / APK** → upload the `.aab` to Play Console (same app; use **Android Automotive OS** form factor / track for the automotive bundle).
 
-Unsigned CI-style bundles (debug-signed) land under:
+Output paths (unsigned / debug-signed local builds):
 
 - `app/build/outputs/bundle/mobileRelease/app-mobile-release.aab`
 - `app/build/outputs/bundle/automotiveRelease/app-automotive-release.aab`
 
-Release builds use R8 minify and resource shrinking; run `./gradlew bundleMobileRelease bundleAutomotiveRelease` locally to catch ProGuard issues before signing in Studio.
+Release builds enable R8 and resource shrinking — run both bundle tasks locally before signing to catch ProGuard issues.
 
-## Play Console (review access)
+### Testing in Android Studio
 
-Plexora requires a linked Plex account and a **Music** library on the chosen Plex server. Until setup completes, the media browser shows a sign-in error with **Set up Plexora** (mobile/Android Auto opens `SignInActivity`; AAOS uses the same PIN setup flow from the vehicle media browser).
+| Goal | Practical approach |
+|------|---------------------|
+| Mobile UI | **mobile** variant on a phone/tablet AVD or device |
+| Android Auto | **mobile** variant + [Android Auto Desktop Head Unit (DHU)](https://developer.android.com/training/cars/testing/dhu); validates projection and `MediaLibraryService`, not Ford/GM skins |
+| Android Automotive OS | **automotive** variant on an **Automotive** AVD — useful for service logic and setup screens, **not** a stand-in for Ford Digital Experience or other OEM media UIs |
 
-### App content (sign-in instructions)
+For AAOS browse/playback look-and-feel, plan on **physical head-unit or OEM-provided environment** testing.
 
-Path: **Monitor and improve** → **Policy and programs** → **App content**.
+## Play Console (review & access)
 
-- **App access**: **All or some functionality is restricted** (Plex login + music library).
-- **Sign-in details**: **Manage** → **+ Add new instructions** (Play limits each instruction set to **500 characters**; add **two** sets—one for phone/Android Auto, one for Android Automotive OS). Plex uses **PIN linking** at https://plex.tv/link (no shared test password). **Save**, then **Publishing overview** → **Send for review** when only policy text changed.
+Plexora requires a linked Plex account and a server with a **Music** library. Until configured, browse shows a sign-in path (**Set up Plexora** / in-app setup).
 
-Also useful: **Test and release** → **Advanced settings** → **Form factors** → **Android Automotive OS** (screenshots, dedicated track); **Testing notes** on the release that ships `app-automotive-release.aab`.
+**App access (sign-in instructions):** **Monitor and improve → Policy and programs → App content**. Mark restricted access; add PIN-link instructions (500 characters per set — use separate sets for **phone/Android Auto** vs **Android Automotive OS**). See [Prepare your app for review](https://support.google.com/googleplay/android-developer/answer/9859455).
 
-Help: [Prepare your app for review (sign-in details)](https://support.google.com/googleplay/android-developer/answer/9859455).
+| Experience | Typical setup path |
+|------------|-------------------|
+| **Mobile** | Launcher → link Plex → server → music section |
+| **Android Auto** | Complete mobile setup on the phone, then select Plexora in Android Auto |
+| **Android Automotive OS** | In-vehicle media app → **Set up Plexora** → PIN / server / music section on the head unit |
 
-**Reference flow (not limited to 500 chars):**
+Reviewers need a Plex server with a **Music** library (not movies-only).
 
-| Audience | Setup entry |
-|----------|-------------|
-| **Phone** | Launcher app → **Link with Plex.tv** → PIN → server → **Select Music Section** → **Connect and Import** |
-| **Android Auto** | Complete phone setup first, then Plexora in the AA media app list |
-| **Android Automotive OS** | Vehicle media browser → **Set up Plexora** → same PIN / server / music section steps on the head unit |
+## Release notes
 
-Movies-only or empty servers fail at music library selection—reviewers need a server with a Plex **Music** library.
+### Version 11 (current on `dev`)
 
-Playback from an album or playlist queues remaining tracks in order (or shuffled via Shuffle items). Large libraries are loaded in pages so artists and albums beyond the first screen remain browsable.
+Play version codes: **mobile 11**, **automotive 1000011**.
 
-## Release notes (version 11)
+**Mobile**
 
-Draft for Play Console (**mobileRelease** version code **11**, **automotiveRelease** **1000011**). More items expected before ship.
+- Unified **Browse** hub (artists / albums toggle, bottom navigation, grid sizing)
+- Track overflow menu: open **album** or **artist** from a track
+- Artist albums: sort by **title** or **release year** (remembered)
+- Album **duration** badges (cached)
+- Mini player **progress** strip; landscape now playing and artwork stability
+- Browse mode preserved across **rotation**; library cache and layout polish
+- New **launcher icon** (integrated P with play cutout)
 
-### Mobile (version code 11)
+**Android Auto** (mobile bundle)
 
-- Single **Browse** tab with Artists / Albums toggle (compact landscape row; shuffle on that row in landscape)
-- Full-width now playing sheet in landscape; stable artwork sizing while dragging the sheet
+- Richer **now playing** metadata; play queue paging / shuffle window fixes (shared `PlexMediaLibraryService` with mobile)
 
-### Automotive (version code 1000011)
+**Android Automotive OS** (automotive bundle)
 
-- Shared library/playback changes only if applicable; AAOS browse UI unchanged unless noted before release
+- Same playback / queue / metadata improvements via shared media service
+- **Settings / setup** UI tailored for AAOS (mobile-only prefs hidden; larger, system-adjacent layout)
+- Browse/playback appearance still defined by the **OEM media app**
 
-## Release notes (version 10)
+### Version 10 (previous Play release)
 
-Copy into Play Console for **mobileRelease** (version code **10**) and **automotiveRelease** (version code **1000010**).
+**Mobile:** Android Auto setup activity; library browse cache; browse and now playing polish; Media3 playback fixes; dependency updates.
 
-### Mobile (version code 10)
-
-- Android Auto: register setup activity on phone builds; clearer “no music library” setup errors
-- Library browse cache (stale-while-revalidate) for faster tab switching
-- Browse polish: section titles in the top bar, square grid tiles, compact landscape chrome
-- Full-screen now playing and Up next queue with slide-to-dismiss (modal sheets)
-- Square artwork on mini player and full player
-- Dependency refresh (Gradle version catalog, Media3 1.11, Compose BOM 2026.09)
-- Fix playback after Media3 upgrade (session commands, stream URI resolution)
-
-### Automotive (version code 1000010)
-
-- Same shared playback and Plex client fixes as mobile (Media3 session connect, play queues, stream URIs)
-- Dependency updates aligned with mobile; AAOS browse UI unchanged (system media browser)
+**Automotive:** Shared playback and Plex client fixes; dependency alignment; OEM browse UI unchanged.
 
 ## Technical stack
 
-- **UI (mobile)**: Jetpack Compose
-- **Media**: Media3 / ExoPlayer
-- **Network**: OkHttp 5 & Plex API
-- **Images**: Coil 2 (mobile), `ArtworkProvider` ContentProvider (automotive)
-- **Persistence**: SharedPreferences for session and playback state recovery
+- **Mobile UI:** Jetpack Compose, Material 3  
+- **Media:** Media3 / ExoPlayer, `MediaLibraryService`  
+- **Network:** OkHttp, Plex HTTP API  
+- **Images:** Coil (mobile), `ArtworkProvider` ContentProvider (automotive / AA)  
+- **State:** SharedPreferences, in-memory library cache  
 
-## Getting started
+## Getting started (development)
 
-1. Clone the repository.
-2. Open the project in Android Studio.
-3. Select the **mobile** or **automotive** build variant.
-4. Deploy to a device or AAOS emulator.
-5. Link your Plex account (Sign In on automotive; in-app setup on mobile).
+1. Clone the repository.  
+2. Open in Android Studio.  
+3. Choose **mobile** or **automotive** run configuration.  
+4. Deploy to a device or emulator (see testing table above).  
+5. Link Plex (in-app on mobile; **Set up Plexora** / settings on automotive).  
 
 ## License
 
-This project is licensed under the MIT License.
+MIT License.

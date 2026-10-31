@@ -1288,7 +1288,8 @@ fun SetupProgressStep(
 @Composable
 fun SetupScreen(
     viewModel: PlexoraViewModel,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    forAutomotive: Boolean = false,
 ) {
     val context = LocalContext.current
     var url by remember { mutableStateOf("") }
@@ -1353,15 +1354,17 @@ fun SetupScreen(
         isConnectingToServer ||
         (serversList.isEmpty() && sectionsList.isEmpty())
 
+    val setupPadding = if (forAutomotive) 32.dp else 24.dp
+    val setupMaxWidth = if (forAutomotive) 720.dp else 480.dp
     Box(
         modifier = modifier
             .fillMaxSize()
-            .padding(24.dp)
+            .padding(setupPadding)
     ) {
         val setupPanelModifier = Modifier
             .align(Alignment.Center)
             .fillMaxHeight()
-            .widthIn(max = 480.dp)
+            .widthIn(max = setupMaxWidth)
             .fillMaxWidth()
 
         if (isCompactSetupStep) {
@@ -3512,6 +3515,10 @@ fun SettingsScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    if (context.isAutomotive()) {
+        AutomotiveSettingsScreen(viewModel = viewModel, modifier = modifier)
+        return
+    }
     val browseGridTileSize by viewModel.browseGridTileSize.collectAsStateWithLifecycle()
     val versionInfo = remember(context) {
         runCatching {
